@@ -87,7 +87,7 @@ class MappingResult(BaseModel):
                 "user_id": "user_123",
                 "session_id": "session_456",
                 "recommended_track": "Tecnologia e Computação",
-                "recommended_subarea": "Desenvolvimento de Software",
+                "recommended_subarea": "Programação e Desenvolvimento de Software",
                 "area_scores": [
                     {
                         "area": "Tecnologia e Computação",

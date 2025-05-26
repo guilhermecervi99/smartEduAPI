@@ -3,6 +3,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from google.cloud.firestore import ArrayUnion
 import time
+from app.schemas.progress import TrackSwitchRequest
 
 from app.core.security import get_current_user, get_current_user_id_required
 from app.database import get_db, Collections
@@ -20,6 +21,7 @@ from app.schemas.progress import (
     NextStepResponse
 )
 from app.utils.gamification import add_user_xp, grant_badge, XP_REWARDS
+from app.utils.llm_integration import generate_complete_lesson, call_teacher_llm
 from app.utils.progress_utils import (
     get_user_progress,
     advance_user_progress,
@@ -543,10 +545,11 @@ async def advance_progress(
 
 @router.post("/switch-track")
 async def switch_learning_track(
-        new_track: str,
+        payload: TrackSwitchRequest,
         current_user: dict = Depends(get_current_user),
         db=Depends(get_db)
 ) -> Any:
+    new_track = payload.new_track
     """
     Troca a trilha de aprendizado ativa do usuário
 
@@ -801,4 +804,189 @@ async def register_specialization_completion(
         "badge_earned": f"Especialista Master em {spec_name}",
         "certification_id": cert_data["id"],
         "new_level": xp_result["new_level"] if xp_result["level_up"] else None
+    }
+
+
+# Adicione este endpoint ao arquivo app/api/v1/endpoints/progress.py
+
+@router.post("/navigate-to")
+async def navigate_to_content(
+        area: str = Query(...),
+        subarea: str = Query(...),
+        level: str = Query(...),
+        module_index: int = Query(...),
+        lesson_index: int = Query(0),
+        step_index: int = Query(0),
+        current_user: dict = Depends(get_current_user),
+        db=Depends(get_db)
+) -> Any:
+    """
+    Navega diretamente para um conteúdo específico
+
+    - Valida o caminho de navegação
+    - Atualiza a posição do usuário
+    - Preserva a estrutura de progresso
+    """
+    user_id = current_user["id"]
+    user_ref = db.collection(Collections.USERS).document(user_id)
+
+    # Verificar se o conteúdo existe
+    area_ref = db.collection(Collections.LEARNING_PATHS).document(area)
+    area_doc = area_ref.get()
+
+    if not area_doc.exists:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Área '{area}' não encontrada"
+        )
+
+    area_data = area_doc.to_dict()
+
+    # Validar caminho completo
+    try:
+        subarea_data = area_data["subareas"][subarea]
+        level_data = subarea_data["levels"][level]
+        modules = level_data.get("modules", [])
+
+        if module_index >= len(modules):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Índice de módulo inválido: {module_index}"
+            )
+
+        module_data = modules[module_index]
+        lessons = module_data.get("lessons", [])
+
+        if lesson_index >= len(lessons):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Índice de lição inválido: {lesson_index}"
+            )
+
+    except KeyError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Caminho inválido: {str(e)}"
+        )
+
+    # Buscar progresso atual
+    current_progress = current_user.get("progress", {})
+
+    # Se mudando de área, salvar progresso anterior
+    if current_progress.get("area") != area and current_progress.get("area"):
+        saved_progress = current_user.get("saved_progress", {})
+        saved_progress[current_progress["area"]] = current_progress.copy()
+        user_ref.update({"saved_progress": saved_progress})
+
+    # Atualizar progresso
+    updated_progress = {
+        "area": area,
+        "subareas_order": current_progress.get("subareas_order", list(area_data.get("subareas", {}).keys())),
+        "current": {
+            "subarea": subarea,
+            "level": level,
+            "module_index": module_index,
+            "lesson_index": lesson_index,
+            "step_index": step_index
+        }
+    }
+
+    # Se não tem ordem de subáreas, criar
+    if not updated_progress["subareas_order"]:
+        all_subareas = list(area_data.get("subareas", {}).keys())
+        # Colocar a subárea atual primeiro
+        if subarea in all_subareas:
+            all_subareas.remove(subarea)
+        updated_progress["subareas_order"] = [subarea] + all_subareas
+
+    user_ref.update({
+        "progress": updated_progress,
+        "current_track": area  # Atualizar também a trilha atual
+    })
+
+    # Adicionar XP por navegação
+    add_user_xp(db, user_id, 2, f"Navegou para: {level} - Módulo {module_index + 1}")
+
+    return {
+        "message": "Navegação atualizada com sucesso",
+        "current_position": {
+            "area": area,
+            "subarea": subarea,
+            "level": level,
+            "module_index": module_index,
+            "lesson_index": lesson_index,
+            "step_index": step_index
+        }
+    }
+
+
+# Adicione estes endpoints ao arquivo progress.py
+
+@router.get("/today")
+async def get_today_progress(
+        current_user: dict = Depends(get_current_user),
+        db=Depends(get_db)
+) -> Any:
+    """
+    Obtém o progresso do usuário hoje
+    """
+    user_id = current_user["id"]
+    today = time.strftime("%Y-%m-%d")
+
+    # Contar lições completadas hoje
+    completed_lessons = current_user.get("completed_lessons", [])
+    lessons_today = len([l for l in completed_lessons if l.get("completion_date") == today])
+
+    # Contar módulos completados hoje
+    completed_modules = current_user.get("completed_modules", [])
+    modules_today = len([m for m in completed_modules if m.get("completion_date") == today])
+
+    # Estimar tempo de estudo (30 min por lição, 60 min por módulo)
+    study_time = (lessons_today * 30) + (modules_today * 60)
+
+    return {
+        "date": today,
+        "lessons_completed": lessons_today,
+        "modules_completed": modules_today,
+        "study_time_minutes": study_time
+    }
+
+
+@router.get("/weekly")
+async def get_weekly_progress(
+        current_user: dict = Depends(get_current_user),
+        db=Depends(get_db)
+) -> Any:
+    """
+    Obtém o progresso semanal do usuário
+    """
+    user_id = current_user["id"]
+
+    # Calcular datas da semana
+    today = time.time()
+    week_start = today - (6 * 24 * 60 * 60)  # 6 dias atrás
+
+    # Contar lições da semana
+    completed_lessons = current_user.get("completed_lessons", [])
+    weekly_lessons = 0
+
+    for lesson in completed_lessons:
+        completion_date = lesson.get("completion_date", "")
+        if completion_date:
+            # Converter string para timestamp
+            try:
+                lesson_time = time.mktime(time.strptime(completion_date, "%Y-%m-%d"))
+                if lesson_time >= week_start:
+                    weekly_lessons += 1
+            except:
+                pass
+
+    # Meta semanal padrão
+    weekly_target = 5  # 5 lições por semana
+
+    return {
+        "target": weekly_target,
+        "completed": weekly_lessons,
+        "percentage": min(100, (weekly_lessons / weekly_target) * 100),
+        "days_remaining": 7 - ((today - week_start) // (24 * 60 * 60))
     }

@@ -2,6 +2,9 @@
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, Field
 
+class TrackSwitchRequest(BaseModel):
+    """Requisição para trocar trilha de aprendizado"""
+    new_track: str
 
 class ProgressResponse(BaseModel):
     """Resposta com progresso atual do usuário"""
@@ -104,3 +107,16 @@ class NextStepResponse(BaseModel):
     user_id: str
     recommendations: List[str]
     generated_at: float
+
+# Adicione este schema ao arquivo app/schemas/progress.py
+
+class NavigateToRequest(BaseModel):
+    """Requisição para navegar para conteúdo específico"""
+    area: str
+    subarea: str
+    level: str
+    module_index: int = Field(..., ge=0)
+    lesson_index: int = Field(0, ge=0)
+    step_index: int = Field(0, ge=0)
+
+
