@@ -89,3 +89,6 @@ pip-log.txt
 
 # macOS
 .DS_Store
+
+# Pickle files
+*.pkl
