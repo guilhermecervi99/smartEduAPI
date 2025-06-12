@@ -1,11 +1,14 @@
 # app/api/v1/endpoints/mapping.py
-from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, Depends, HTTPException, status
+# Sistema final integrado com modelo PKL
+
+from typing import Dict, List, Optional, Any
+from fastapi import APIRouter, Depends, HTTPException, status, File, UploadFile
 import time
 import uuid
 from collections import defaultdict
+import os
 
-from app.core.security import get_current_user, get_current_user_id_required, get_current_user_id
+from app.core.security import get_current_user
 from app.database import get_db, Collections
 from app.schemas.mapping import (
     MappingStartResponse,
@@ -19,123 +22,289 @@ from app.schemas.mapping import (
     MappingHistory
 )
 from app.utils.gamification import add_user_xp, grant_badge, XP_REWARDS
-from app.utils.text_analysis import analyze_text_interests, normalize_text
-from app.utils.interest_mappings import INTEREST_MAPPINGS
+from app.utils.hybrid_interest_mapper import HybridInterestMapper
 from app.config import TRACK_DESCRIPTIONS
 
 router = APIRouter()
 
-# Cache de sessões de mapeamento (em produção, usar Redis)
+# Cache de sessões
 _mapping_sessions = {}
+
+# Instância global do mapeador híbrido
+_hybrid_mapper = None
+
+
+def get_hybrid_mapper():
+    """Obtém instância singleton do mapeador híbrido"""
+    global _hybrid_mapper
+    if _hybrid_mapper is None:
+        pkl_path = os.getenv('CLASSIFIER_PKL_PATH', 'ultimate_classifier.pkl')
+        try:
+            _hybrid_mapper = HybridInterestMapper(pkl_path)
+            print("✅ Mapeador híbrido inicializado com sucesso!")
+        except Exception as e:
+            print(f"❌ Erro ao inicializar mapeador híbrido: {e}")
+            # Fallback para sistema sem PKL
+            _hybrid_mapper = None
+    return _hybrid_mapper
 
 
 def generate_balanced_questions() -> List[MappingQuestion]:
-    """Gera as perguntas balanceadas para o mapeamento"""
+    """Gera as perguntas do questionário"""
     questions = [
         {
             "id": 1,
             "question": "Quais das seguintes atividades você mais gosta de fazer no seu tempo livre?",
             "options": {
-                "1": {"text": "Programar ou criar conteúdo digital", "area": "Tecnologia e Computação", "weight": 1.0},
-                "2": {"text": "Resolver problemas matemáticos ou científicos", "area": "Ciências Exatas",
-                      "weight": 1.0},
-                "3": {"text": "Praticar esportes ou atividades físicas", "area": "Esportes e Atividades Físicas",
-                      "weight": 1.0},
-                "4": {"text": "Desenhar, pintar ou criar obras visuais", "area": "Artes e Cultura", "weight": 1.0},
-                "5": {"text": "Ler livros, escrever ou aprender idiomas", "area": "Literatura e Linguagem",
-                      "weight": 1.0},
-                "6": {"text": "Cuidar de plantas, animais ou do meio ambiente", "area": "Ciências Biológicas e Saúde",
-                      "weight": 1.0},
-                "7": {"text": "Debater, analisar sociedade ou política", "area": "Ciências Humanas e Sociais",
-                      "weight": 1.0},
-                "8": {"text": "Planejar negócios ou gerenciar recursos", "area": "Negócios e Empreendedorismo",
-                      "weight": 1.0},
-                "9": {"text": "Aprimorar a comunicação e expressão verbal", "area": "Comunicação Profissional",
-                      "weight": 1.0},
+                "1": {
+                    "text": "Programar ou criar conteúdo digital",
+                    "area": "Tecnologia e Computação",
+                    "weight": 0.6
+                },
+                "2": {
+                    "text": "Resolver problemas matemáticos ou científicos",
+                    "area": "Ciências Exatas",
+                    "weight": 0.8
+                },
+                "3": {
+                    "text": "Praticar esportes ou atividades físicas",
+                    "area": "Esportes e Atividades Físicas",
+                    "weight": 0.4
+                },
+                "4": {
+                    "text": "Desenhar, pintar ou criar obras visuais",
+                    "area": "Artes e Cultura",
+                    "weight": 0.6
+                },
+                "5": {
+                    "text": "Ler livros, escrever ou aprender idiomas",
+                    "area": "Literatura e Linguagem",
+                    "weight": 0.8
+                },
+                "6": {
+                    "text": "Cuidar de plantas, animais ou do meio ambiente",
+                    "area": "Ciências Biológicas e Saúde",
+                    "weight": 0.7
+                },
+                "7": {
+                    "text": "Debater, analisar sociedade ou política",
+                    "area": "Ciências Humanas e Sociais",
+                    "weight": 0.8
+                },
+                "8": {
+                    "text": "Planejar negócios ou gerenciar recursos",
+                    "area": "Negócios e Empreendedorismo",
+                    "weight": 0.7
+                },
+                "9": {
+                    "text": "Aprimorar a comunicação e expressão verbal",
+                    "area": "Comunicação Profissional",
+                    "weight": 0.7
+                }
             }
         },
         {
             "id": 2,
             "question": "Qual tipo de conteúdo você mais gosta de consumir na internet?",
             "options": {
-                "1": {"text": "Tutoriais de tecnologia, jogos ou programação", "area": "Tecnologia e Computação",
-                      "weight": 0.8},
-                "2": {"text": "Vídeos educativos sobre ciências exatas", "area": "Ciências Exatas", "weight": 0.8},
-                "3": {"text": "Conteúdos sobre esportes e saúde física", "area": "Esportes e Atividades Físicas",
-                      "weight": 0.8},
-                "4": {"text": "Canais de arte, música ou cultura", "area": "Artes e Cultura", "weight": 0.8},
-                "5": {"text": "Blogs literários ou canais sobre idiomas", "area": "Literatura e Linguagem",
-                      "weight": 0.8},
-                "6": {"text": "Canais sobre biologia, saúde ou natureza", "area": "Ciências Biológicas e Saúde",
-                      "weight": 0.8},
-                "7": {"text": "Conteúdos de história, filosofia ou sociologia", "area": "Ciências Humanas e Sociais",
-                      "weight": 0.8},
-                "8": {"text": "Vídeos sobre empreendedorismo e negócios", "area": "Negócios e Empreendedorismo",
-                      "weight": 0.8},
-                "9": {"text": "Podcasts, debates ou conteúdos de comunicação", "area": "Comunicação Profissional",
-                      "weight": 0.8},
+                "1": {
+                    "text": "Tutoriais de tecnologia, jogos ou programação",
+                    "area": "Tecnologia e Computação",
+                    "weight": 0.9
+                },
+                "2": {
+                    "text": "Vídeos educativos sobre ciências exatas",
+                    "area": "Ciências Exatas",
+                    "weight": 1.0
+                },
+                "3": {
+                    "text": "Conteúdos sobre esportes e saúde física",
+                    "area": "Esportes e Atividades Físicas",
+                    "weight": 0.7
+                },
+                "4": {
+                    "text": "Canais de arte, música ou cultura",
+                    "area": "Artes e Cultura",
+                    "weight": 0.9
+                },
+                "5": {
+                    "text": "Blogs literários ou canais sobre idiomas",
+                    "area": "Literatura e Linguagem",
+                    "weight": 1.0
+                },
+                "6": {
+                    "text": "Canais sobre biologia, saúde ou natureza",
+                    "area": "Ciências Biológicas e Saúde",
+                    "weight": 1.0
+                },
+                "7": {
+                    "text": "Conteúdos de história, filosofia ou sociologia",
+                    "area": "Ciências Humanas e Sociais",
+                    "weight": 1.0
+                },
+                "8": {
+                    "text": "Vídeos sobre empreendedorismo e negócios",
+                    "area": "Negócios e Empreendedorismo",
+                    "weight": 1.0
+                },
+                "9": {
+                    "text": "Podcasts, debates ou conteúdos de comunicação",
+                    "area": "Comunicação Profissional",
+                    "weight": 1.0
+                }
             }
         },
         {
             "id": 3,
             "question": "Em um projeto em grupo, que papel você geralmente prefere assumir?",
             "options": {
-                "1": {"text": "Responsável pela parte técnica/tecnológica", "area": "Tecnologia e Computação",
-                      "weight": 0.9},
-                "2": {"text": "Resolver problemas lógicos e fazer cálculos", "area": "Ciências Exatas", "weight": 0.9},
-                "3": {"text": "Organizar atividades práticas e dinâmicas", "area": "Esportes e Atividades Físicas",
-                      "weight": 0.9},
-                "4": {"text": "Cuidar do design ou aspecto visual", "area": "Artes e Cultura", "weight": 0.9},
-                "5": {"text": "Redação e revisão textual", "area": "Literatura e Linguagem", "weight": 0.9},
-                "6": {"text": "Pesquisar e cuidar do bem-estar do grupo", "area": "Ciências Biológicas e Saúde",
-                      "weight": 0.9},
-                "7": {"text": "Contextualizar, analisar impactos sociais", "area": "Ciências Humanas e Sociais",
-                      "weight": 0.9},
-                "8": {"text": "Coordenar, organizar recursos e prazos", "area": "Negócios e Empreendedorismo",
-                      "weight": 0.9},
-                "9": {"text": "Apresentar o trabalho e comunicar ideias", "area": "Comunicação Profissional",
-                      "weight": 0.9},
+                "1": {
+                    "text": "Responsável pela parte técnica/tecnológica",
+                    "area": "Tecnologia e Computação",
+                    "weight": 1.2
+                },
+                "2": {
+                    "text": "Resolver problemas lógicos e fazer cálculos",
+                    "area": "Ciências Exatas",
+                    "weight": 1.2
+                },
+                "3": {
+                    "text": "Organizar atividades práticas e dinâmicas",
+                    "area": "Esportes e Atividades Físicas",
+                    "weight": 0.9
+                },
+                "4": {
+                    "text": "Cuidar do design ou aspecto visual",
+                    "area": "Artes e Cultura",
+                    "weight": 1.1
+                },
+                "5": {
+                    "text": "Redação e revisão textual",
+                    "area": "Literatura e Linguagem",
+                    "weight": 1.2
+                },
+                "6": {
+                    "text": "Pesquisar e cuidar do bem-estar do grupo",
+                    "area": "Ciências Biológicas e Saúde",
+                    "weight": 1.1
+                },
+                "7": {
+                    "text": "Contextualizar, analisar impactos sociais",
+                    "area": "Ciências Humanas e Sociais",
+                    "weight": 1.2
+                },
+                "8": {
+                    "text": "Coordenar, organizar recursos e prazos",
+                    "area": "Negócios e Empreendedorismo",
+                    "weight": 1.2
+                },
+                "9": {
+                    "text": "Apresentar o trabalho e comunicar ideias",
+                    "area": "Comunicação Profissional",
+                    "weight": 1.2
+                }
             }
         },
         {
             "id": 4,
             "question": "Qual dessas matérias ou temas você mais gostaria de se aprofundar?",
             "options": {
-                "1": {"text": "Programação, robótica ou informática", "area": "Tecnologia e Computação", "weight": 1.1},
-                "2": {"text": "Matemática, física ou química", "area": "Ciências Exatas", "weight": 1.1},
-                "3": {"text": "Educação física, técnicas esportivas", "area": "Esportes e Atividades Físicas",
-                      "weight": 1.1},
-                "4": {"text": "Artes visuais, música ou expressão cultural", "area": "Artes e Cultura", "weight": 1.1},
-                "5": {"text": "Literatura, redação ou idiomas", "area": "Literatura e Linguagem", "weight": 1.1},
-                "6": {"text": "Biologia, meio ambiente ou saúde", "area": "Ciências Biológicas e Saúde", "weight": 1.1},
-                "7": {"text": "História, filosofia, sociologia ou direito", "area": "Ciências Humanas e Sociais",
-                      "weight": 1.1},
-                "8": {"text": "Administração, economia ou marketing", "area": "Negócios e Empreendedorismo",
-                      "weight": 1.1},
-                "9": {"text": "Jornalismo, oratória ou comunicação", "area": "Comunicação Profissional", "weight": 1.1},
+                "1": {
+                    "text": "Programação, robótica ou informática",
+                    "area": "Tecnologia e Computação",
+                    "weight": 1.5
+                },
+                "2": {
+                    "text": "Matemática, física ou química",
+                    "area": "Ciências Exatas",
+                    "weight": 1.5
+                },
+                "3": {
+                    "text": "Educação física, técnicas esportivas",
+                    "area": "Esportes e Atividades Físicas",
+                    "weight": 1.2
+                },
+                "4": {
+                    "text": "Artes visuais, música ou expressão cultural",
+                    "area": "Artes e Cultura",
+                    "weight": 1.4
+                },
+                "5": {
+                    "text": "Literatura, redação ou idiomas",
+                    "area": "Literatura e Linguagem",
+                    "weight": 1.5
+                },
+                "6": {
+                    "text": "Biologia, meio ambiente ou saúde",
+                    "area": "Ciências Biológicas e Saúde",
+                    "weight": 1.5
+                },
+                "7": {
+                    "text": "História, filosofia, sociologia ou direito",
+                    "area": "Ciências Humanas e Sociais",
+                    "weight": 1.5
+                },
+                "8": {
+                    "text": "Administração, economia ou marketing",
+                    "area": "Negócios e Empreendedorismo",
+                    "weight": 1.5
+                },
+                "9": {
+                    "text": "Jornalismo, oratória ou comunicação",
+                    "area": "Comunicação Profissional",
+                    "weight": 1.5
+                }
             }
         },
         {
             "id": 5,
             "question": "Se pudesse escolher uma profissão agora, qual dessas áreas mais te atrairia?",
             "options": {
-                "1": {"text": "Desenvolvedor de software, analista de TI", "area": "Tecnologia e Computação",
-                      "weight": 1.2},
-                "2": {"text": "Engenheiro, físico ou matemático", "area": "Ciências Exatas", "weight": 1.2},
-                "3": {"text": "Atleta, personal trainer ou educador físico", "area": "Esportes e Atividades Físicas",
-                      "weight": 1.2},
-                "4": {"text": "Artista, músico, designer ou produtor cultural", "area": "Artes e Cultura",
-                      "weight": 1.2},
-                "5": {"text": "Escritor, tradutor ou professor de idiomas", "area": "Literatura e Linguagem",
-                      "weight": 1.2},
-                "6": {"text": "Médico, biólogo, veterinário ou nutricionista", "area": "Ciências Biológicas e Saúde",
-                      "weight": 1.2},
-                "7": {"text": "Professor, advogado, historiador ou psicólogo", "area": "Ciências Humanas e Sociais",
-                      "weight": 1.2},
-                "8": {"text": "Empresário, administrador ou consultor", "area": "Negócios e Empreendedorismo",
-                      "weight": 1.2},
-                "9": {"text": "Jornalista, relações públicas ou influenciador", "area": "Comunicação Profissional",
-                      "weight": 1.2},
+                "1": {
+                    "text": "Desenvolvedor de software, analista de TI",
+                    "area": "Tecnologia e Computação",
+                    "weight": 2.0
+                },
+                "2": {
+                    "text": "Engenheiro, físico ou matemático",
+                    "area": "Ciências Exatas",
+                    "weight": 2.0
+                },
+                "3": {
+                    "text": "Atleta, personal trainer ou educador físico",
+                    "area": "Esportes e Atividades Físicas",
+                    "weight": 2.0
+                },
+                "4": {
+                    "text": "Artista, músico, designer ou produtor cultural",
+                    "area": "Artes e Cultura",
+                    "weight": 2.0
+                },
+                "5": {
+                    "text": "Escritor, tradutor ou professor de idiomas",
+                    "area": "Literatura e Linguagem",
+                    "weight": 2.0
+                },
+                "6": {
+                    "text": "Médico, biólogo, veterinário ou nutricionista",
+                    "area": "Ciências Biológicas e Saúde",
+                    "weight": 2.0
+                },
+                "7": {
+                    "text": "Professor, advogado, historiador ou psicólogo",
+                    "area": "Ciências Humanas e Sociais",
+                    "weight": 2.0
+                },
+                "8": {
+                    "text": "Empresário, administrador ou consultor",
+                    "area": "Negócios e Empreendedorismo",
+                    "weight": 2.0
+                },
+                "9": {
+                    "text": "Jornalista, relações públicas ou influenciador",
+                    "area": "Comunicação Profissional",
+                    "weight": 2.0
+                }
             }
         }
     ]
@@ -161,20 +330,10 @@ async def start_mapping(
         db=Depends(get_db),
         current_user: dict = Depends(get_current_user)
 ) -> Any:
-    """
-    Inicia uma nova sessão de mapeamento de interesses
-
-    - Gera um ID de sessão único
-    - Retorna as perguntas do questionário
-    - Salva a sessão para posterior processamento
-    """
-    # Gerar ID de sessão
+    """Inicia uma nova sessão de mapeamento"""
     session_id = str(uuid.uuid4())
-
-    # Gerar perguntas
     questions = generate_balanced_questions()
 
-    # Salvar sessão
     _mapping_sessions[session_id] = {
         "user_id": current_user["id"],
         "started_at": time.time(),
@@ -182,11 +341,28 @@ async def start_mapping(
         "status": "in_progress"
     }
 
+    # Verificar se o modelo PKL está disponível
+    mapper = get_hybrid_mapper()
+    has_ml_model = mapper is not None
+
+    instructions = (
+        "Responda às perguntas abaixo para mapearmos seus interesses de forma precisa. "
+        "Suas escolhas profissionais e acadêmicas têm maior peso que hobbies. "
+        "Você pode selecionar múltiplas opções em cada pergunta."
+    )
+
+    if has_ml_model:
+        instructions += (
+            "\n\n💡 Dica: No campo de texto livre, seja específico sobre seus interesses, "
+            "sonhos e o que realmente te motiva. Nossa IA analisará seu texto para "
+            "uma recomendação ainda mais precisa!"
+        )
+
     return MappingStartResponse(
         session_id=session_id,
         questions=questions,
         total_questions=len(questions),
-        instructions="Responda às perguntas abaixo para mapearmos seus interesses. Você pode selecionar múltiplas opções em cada pergunta."
+        instructions=instructions
     )
 
 
@@ -196,15 +372,8 @@ async def submit_mapping(
         db=Depends(get_db),
         current_user: dict = Depends(get_current_user)
 ) -> Any:
-    """
-    Processa a submissão completa do questionário
+    """Processa a submissão com o sistema híbrido"""
 
-    - Calcula pontuações para cada área
-    - Analisa o texto de interesses (se fornecido)
-    - Determina a trilha e subárea recomendadas
-    - Atualiza o perfil do usuário
-    - Concede XP e badges
-    """
     # Verificar sessão
     if submission.session_id not in _mapping_sessions:
         raise HTTPException(
@@ -219,56 +388,59 @@ async def submit_mapping(
             detail="Session does not belong to this user"
         )
 
-    # Inicializar pontuações
-    area_scores = defaultdict(float)
-    all_areas = list(TRACK_DESCRIPTIONS.keys())
-
-    # Processar respostas do questionário
+    # Preparar dados para o mapeador híbrido
     questions = {q.id: q for q in session["questions"]}
 
-    for response in submission.responses:
-        if response.question_id not in questions:
-            continue
+    # Converter respostas para formato esperado
+    questionnaire_responses = {
+        r.question_id: r.selected_options
+        for r in submission.responses
+    }
 
-        question = questions[response.question_id]
+    # Converter opções para formato esperado
+    question_options = {}
+    for q_id, question in questions.items():
+        question_options[q_id] = {}
+        for opt_id, option in question.options.items():
+            question_options[q_id][opt_id] = {
+                "area": option.area,
+                "weight": option.weight
+            }
 
-        for option_id in response.selected_options:
-            if option_id in question.options:
-                option = question.options[option_id]
-                if option.area:
-                    area_scores[option.area] += option.weight
+    # Usar mapeador híbrido se disponível
+    mapper = get_hybrid_mapper()
 
-    # Analisar texto se fornecido
-    text_contribution = 0.0
-    if submission.text_response:
-        text_analysis = analyze_text_interests(
-            submission.text_response,
-            INTEREST_MAPPINGS
+    if mapper and submission.text_response:
+        # Usar sistema híbrido com PKL
+        results = mapper.map_interests(
+            questionnaire_responses,
+            question_options,
+            submission.text_response
         )
 
-        # Integrar pontuações do texto
-        text_weight = 1.5
-        for area, score in text_analysis["area_scores"].items():
-            if area in area_scores:
-                area_scores[area] += score * text_weight
-                text_contribution += score * text_weight
+        normalized_scores = results['combined_scores']
+        text_contribution = results['text_quality'] * 0.4  # 40% máximo
 
-    # Normalizar pontuações
-    if area_scores:
-        max_score = max(area_scores.values())
-        if max_score > 0:
-            normalized_scores = {area: score / max_score for area, score in area_scores.items()}
-        else:
-            normalized_scores = {area: 1.0 / len(all_areas) for area in all_areas}
+        # Log para debug
+        print(f"📊 Usando sistema híbrido:")
+        print(f"   - Qualidade do texto: {results['text_quality']:.1%}")
+        print(f"   - Concordância: {results['analysis_details']['agreement_score']:.1%}")
+
     else:
-        normalized_scores = {area: 1.0 / len(all_areas) for area in all_areas}
+        # Fallback para sistema apenas com questionário
+        normalized_scores = mapper.calculate_questionnaire_scores(
+            questionnaire_responses,
+            question_options
+        ) if mapper else {}
+        text_contribution = 0.0
 
-    # Garantir que todas as áreas tenham uma pontuação
+    # Garantir que todas as áreas tenham pontuação
+    all_areas = list(TRACK_DESCRIPTIONS.keys())
     for area in all_areas:
         if area not in normalized_scores:
             normalized_scores[area] = 0.0
 
-    # Ordenar áreas por pontuação
+    # Ordenar áreas
     sorted_areas = sorted(normalized_scores.items(), key=lambda x: x[1], reverse=True)
 
     # Criar lista de AreaScore
@@ -284,44 +456,18 @@ async def submit_mapping(
     # Determinar trilha principal
     recommended_track = sorted_areas[0][0]
 
-    # Determinar subáreas recomendadas
+    # Determinar subáreas (simplificado para este exemplo)
     top_subareas = []
-    if submission.text_response:
-        # Usar análise de texto para subáreas
-        text_analysis = analyze_text_interests(
-            submission.text_response,
-            INTEREST_MAPPINGS
-        )
-
-        subarea_scores = text_analysis.get("subarea_scores", {})
-        # Filtrar apenas subáreas da área recomendada
-        relevant_subareas = {
-            k: v for k, v in subarea_scores.items()
-            if isinstance(k, tuple) and k[0] == recommended_track
-        }
-
-        sorted_subareas = sorted(relevant_subareas.items(), key=lambda x: x[1], reverse=True)
-
-        for (area, subarea), score in sorted_subareas[:3]:
+    area_doc = db.collection(Collections.LEARNING_PATHS).document(recommended_track).get()
+    if area_doc.exists:
+        area_data = area_doc.to_dict()
+        subareas = list(area_data.get("subareas", {}).keys())
+        if subareas:
             top_subareas.append(SubareaRecommendation(
-                subarea=subarea,
-                score=score,
-                reason=f"Mencionado em seus interesses"
+                subarea=subareas[0],
+                score=1.0,
+                reason="Subárea principal da trilha"
             ))
-
-    # Se não houver subáreas da análise de texto, usar subáreas padrão
-    if not top_subareas:
-        # Buscar subáreas disponíveis no Firestore
-        area_doc = db.collection(Collections.LEARNING_PATHS).document(recommended_track).get()
-        if area_doc.exists:
-            area_data = area_doc.to_dict()
-            subareas = list(area_data.get("subareas", {}).keys())
-            if subareas:
-                top_subareas.append(SubareaRecommendation(
-                    subarea=subareas[0],
-                    score=1.0,
-                    reason="Subárea principal da trilha"
-                ))
 
     recommended_subarea = top_subareas[0].subarea if top_subareas else None
 
@@ -333,7 +479,8 @@ async def submit_mapping(
         "date": time.strftime("%Y-%m-%d"),
         "track": recommended_track,
         "score": normalized_scores.get(recommended_track, 0.0),
-        "top_interests": dict(sorted_areas[:3])
+        "top_interests": dict(sorted_areas[:3]),
+        "method": "hybrid_pkl" if mapper and submission.text_response else "questionnaire_only"
     }
 
     # Preparar atualizações
@@ -344,16 +491,14 @@ async def submit_mapping(
         "mapping_history": current_user.get("mapping_history", []) + [mapping_record]
     }
 
-    # Se houver subárea recomendada, configurar progresso
+    # Configurar progresso inicial
     if recommended_subarea:
-        # Buscar ordem de subáreas
         area_doc = db.collection(Collections.LEARNING_PATHS).document(recommended_track).get()
         subareas_order = []
         if area_doc.exists:
             area_data = area_doc.to_dict()
             all_subareas = list(area_data.get("subareas", {}).keys())
 
-            # Colocar a subárea recomendada primeiro
             subareas_order = [recommended_subarea]
             for sub in all_subareas:
                 if sub != recommended_subarea:
@@ -376,19 +521,30 @@ async def submit_mapping(
 
     # Adicionar XP e badges
     xp_earned = XP_REWARDS.get("complete_mapping", 25)
-    add_user_xp(db, current_user["id"], xp_earned, f"Completou mapeamento de interesses")
+
+    # Bonus de XP se usou texto
+    if submission.text_response and len(submission.text_response) > 50:
+        xp_earned += 10
+        add_user_xp(db, current_user["id"], xp_earned, "Completou mapeamento detalhado com análise de texto")
+    else:
+        add_user_xp(db, current_user["id"], xp_earned, "Completou mapeamento de interesses")
 
     badges_earned = []
 
-    # Badge de explorador da área
+    # Badge de explorador
     explorer_badge = f"Explorador de {recommended_track}"
     if grant_badge(db, current_user["id"], explorer_badge):
         badges_earned.append(explorer_badge)
 
-    # Badge de autoconhecimento (primeiro mapeamento)
+    # Badge de autoconhecimento
     if len(current_user.get("mapping_history", [])) == 0:
         if grant_badge(db, current_user["id"], "Autoconhecimento"):
             badges_earned.append("Autoconhecimento")
+
+    # Badge especial por usar IA
+    if mapper and submission.text_response and len(submission.text_response) > 100:
+        if grant_badge(db, current_user["id"], "Explorador Detalhista"):
+            badges_earned.append("Explorador Detalhista")
 
     # Limpar sessão
     del _mapping_sessions[submission.session_id]
@@ -400,7 +556,7 @@ async def submit_mapping(
         recommended_subarea=recommended_subarea,
         area_scores=area_score_list,
         top_subareas=top_subareas,
-        text_analysis_contribution=text_contribution if submission.text_response else None,
+        text_analysis_contribution=text_contribution,
         badges_earned=badges_earned,
         xp_earned=xp_earned
     )
@@ -411,17 +567,17 @@ async def analyze_text(
         request: TextAnalysisRequest,
         current_user: dict = Depends(get_current_user)
 ) -> Any:
-    """
-    Analisa um texto para identificar interesses
+    """Analisa texto usando o modelo PKL"""
+    mapper = get_hybrid_mapper()
 
-    - Útil para análise rápida sem passar pelo questionário completo
-    - Retorna áreas e subáreas identificadas
-    """
+    if not mapper:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="ML model not available"
+        )
+
     # Analisar texto
-    analysis = analyze_text_interests(
-        request.text,
-        INTEREST_MAPPINGS
-    )
+    text_scores = mapper.analyze_text_with_pkl(request.text)
 
     # Formatar resposta
     area_scores = [
@@ -431,32 +587,98 @@ async def analyze_text(
             "percentage": score * 100
         }
         for area, score in sorted(
-            analysis["area_scores"].items(),
+            text_scores.items(),
             key=lambda x: x[1],
             reverse=True
         )
     ]
 
-    subarea_scores = [
-        {
-            "area": area,
-            "subarea": subarea,
-            "score": score,
-            "percentage": score * 100
-        }
-        for (area, subarea), score in sorted(
-            analysis["subarea_scores"].items(),
-            key=lambda x: x[1],
-            reverse=True
-        )[:10]  # Top 10 subáreas
-    ]
+    # Qualidade do texto
+    text_quality = mapper.calculate_text_quality(request.text)
 
     return {
         "area_scores": area_scores,
-        "subarea_scores": subarea_scores,
         "top_area": area_scores[0]["area"] if area_scores else None,
-        "text_analyzed": request.text[:100] + "..." if len(request.text) > 100 else request.text
+        "text_quality": text_quality,
+        "text_analyzed": request.text[:100] + "..." if len(request.text) > 100 else request.text,
+        "method": "ml_classifier"
     }
+
+
+@router.post("/upload-pkl")
+async def upload_classifier_model(
+        file: UploadFile = File(...),
+        current_user: dict = Depends(get_current_user)
+) -> Any:
+    """
+    Endpoint para fazer upload de um novo modelo PKL
+    (Apenas para admins)
+    """
+    # Verificar se é admin
+    if current_user.get("role") != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admins can upload models"
+        )
+
+    # Verificar extensão
+    if not file.filename.endswith('.pkl'):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File must be a .pkl file"
+        )
+
+    # Salvar arquivo
+    try:
+        contents = await file.read()
+        with open("ultimate_classifier_new.pkl", "wb") as f:
+            f.write(contents)
+
+        # Recarregar o mapeador
+        global _hybrid_mapper
+        _hybrid_mapper = HybridInterestMapper("ultimate_classifier_new.pkl")
+
+        # Mover arquivo
+        os.rename("ultimate_classifier_new.pkl", "ultimate_classifier.pkl")
+
+        return {
+            "message": "Model uploaded successfully",
+            "filename": file.filename,
+            "size": len(contents)
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to upload model: {str(e)}"
+        )
+
+
+@router.get("/model-status")
+async def get_model_status(
+        current_user: dict = Depends(get_current_user)
+) -> Any:
+    """Verifica o status do modelo ML"""
+    mapper = get_hybrid_mapper()
+
+    if mapper:
+        return {
+            "status": "active",
+            "model_type": "hybrid_pkl",
+            "categories_available": list(mapper.label_encoder.classes_) if hasattr(mapper, 'label_encoder') else [],
+            "embedder_loaded": hasattr(mapper, 'embedder'),
+            "features": {
+                "questionnaire": True,
+                "text_analysis": True,
+                "hybrid_scoring": True
+            }
+        }
+    else:
+        return {
+            "status": "inactive",
+            "model_type": "questionnaire_only",
+            "message": "ML model not loaded, using questionnaire-only system"
+        }
 
 
 @router.get("/history", response_model=MappingHistory)
@@ -464,20 +686,20 @@ async def get_mapping_history(
         db=Depends(get_db),
         current_user: dict = Depends(get_current_user)
 ) -> Any:
-    """
-    Obtém o histórico de mapeamentos do usuário
-
-    - Lista todos os mapeamentos realizados
-    - Mostra a evolução dos interesses
-    """
+    """Obtém o histórico de mapeamentos do usuário"""
     mapping_history = current_user.get("mapping_history", [])
 
-    # Determinar área mais forte ao longo do tempo
+    # Análise do histórico
     area_frequencies = defaultdict(int)
+    methods_used = defaultdict(int)
+
     for mapping in mapping_history:
         track = mapping.get("track")
+        method = mapping.get("method", "questionnaire_only")
+
         if track:
             area_frequencies[track] += 1
+        methods_used[method] += 1
 
     strongest_area = None
     if area_frequencies:
@@ -487,26 +709,32 @@ async def get_mapping_history(
         mappings=mapping_history,
         total_mappings=len(mapping_history),
         current_track=current_user.get("current_track"),
-        strongest_area=strongest_area
+        strongest_area=strongest_area,
+        analysis_methods=dict(methods_used)
     )
 
 
 @router.get("/areas")
 async def get_available_areas() -> Any:
-    """
-    Lista todas as áreas disponíveis no sistema
+    """Lista todas as áreas disponíveis"""
+    mapper = get_hybrid_mapper()
 
-    - Retorna áreas com suas descrições
-    - Útil para UI de seleção manual
-    """
     areas = []
     for area, description in TRACK_DESCRIPTIONS.items():
-        areas.append({
+        area_info = {
             "name": area,
             "description": description
-        })
+        }
+
+        # Adicionar informações do modelo ML se disponível
+        if mapper and hasattr(mapper, 'label_encoder'):
+            if area in mapper.label_encoder.classes_:
+                area_info["ml_supported"] = True
+
+        areas.append(area_info)
 
     return {
         "areas": areas,
-        "total": len(areas)
+        "total": len(areas),
+        "ml_model_available": mapper is not None
     }
