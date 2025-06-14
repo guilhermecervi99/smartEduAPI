@@ -205,20 +205,71 @@ def get_next_level_info(current_xp: int, current_level: int) -> Dict[str, Any]:
 
 def calculate_study_streak(user_data: Dict[str, Any]) -> int:
     """
-    Calcula a sequência de dias de estudo
+    Calcula a sequência de dias de estudo do usuário
     """
-    # Implementação simplificada - pode ser melhorada
-    last_activity = user_data.get("last_login", 0)
-    if not last_activity:
+    # Buscar último login
+    last_login = user_data.get("last_login", 0)
+    if not last_login:
         return 0
 
-    # Verificar se a última atividade foi nas últimas 48 horas
     current_time = time.time()
-    if current_time - last_activity < 48 * 60 * 60:  # 48 horas
-        return user_data.get("study_streak", 0) + 1
+    time_diff = current_time - last_login
 
-    return 0
+    # Se o último login foi há mais de 48 horas, a streak quebra
+    if time_diff > 48 * 60 * 60:  # 48 horas
+        return 0
 
+    # Buscar histórico de atividades
+    completed_lessons = user_data.get("completed_lessons", [])
+    completed_modules = user_data.get("completed_modules", [])
+
+    # Criar set de datas únicas de atividade
+    activity_dates = set()
+
+    for lesson in completed_lessons:
+        date = lesson.get("completion_date")
+        if date:
+            activity_dates.add(date)
+
+    for module in completed_modules:
+        date = module.get("completion_date")
+        if date:
+            activity_dates.add(date)
+
+    # Ordenar datas
+    sorted_dates = sorted(activity_dates, reverse=True)
+
+    if not sorted_dates:
+        return 1 if time_diff < 24 * 60 * 60 else 0
+
+    # Contar dias consecutivos
+    streak = 1
+    today = time.strftime("%Y-%m-%d")
+
+    # Se hoje está nas datas, começar de hoje
+    if today in sorted_dates:
+        current_date = today
+    else:
+        # Se não, verificar se ontem está
+        yesterday = time.strftime("%Y-%m-%d", time.localtime(current_time - 24 * 60 * 60))
+        if yesterday in sorted_dates:
+            current_date = yesterday
+        else:
+            return 0
+
+    # Contar dias consecutivos para trás
+    for i in range(1, len(sorted_dates)):
+        prev_date = time.strftime("%Y-%m-%d", time.localtime(
+            time.mktime(time.strptime(current_date, "%Y-%m-%d")) - 24 * 60 * 60
+        ))
+
+        if prev_date in sorted_dates:
+            streak += 1
+            current_date = prev_date
+        else:
+            break
+
+    return streak
 
 # Recompensas por tipo de ação
 XP_REWARDS = {

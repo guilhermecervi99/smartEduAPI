@@ -62,15 +62,6 @@ class ProjectCompletionRequest(BaseModel):
     outcomes: Optional[List[str]] = None
     evidence_urls: Optional[List[str]] = None
 
-
-class AssessmentCompletionRequest(BaseModel):
-    """Requisição para completar uma avaliação"""
-    score: float = Field(..., ge=0, le=100)
-    assessment_type: str  # "final" ou "module"
-    module_title: Optional[str] = None
-    level_name: Optional[str] = None
-
-
 class CertificationRequest(BaseModel):
     """Requisição para emitir uma certificação"""
     title: str
@@ -120,3 +111,36 @@ class NavigateToRequest(BaseModel):
     step_index: int = Field(0, ge=0)
 
 
+# Adicione estes schemas ao arquivo progress.py existente
+
+class AssessmentCompletionRequest(BaseModel):
+    """Requisição para completar uma avaliação"""
+    assessment_id: str
+    score: float = Field(..., ge=0, le=100)
+    assessment_type: str = Field(..., description="'module' ou 'final'")
+    module_title: Optional[str] = None
+    level_name: Optional[str] = None
+    area_name: Optional[str] = None
+    subarea_name: Optional[str] = None
+    time_taken_minutes: Optional[int] = None
+    questions_correct: Optional[int] = None
+    total_questions: Optional[int] = None
+
+
+class SpecializationStartRequest(BaseModel):
+    """Requisição para iniciar uma especialização"""
+    specialization_name: str
+    area: str
+    subarea: str
+    force_start: bool = False  # Ignorar pré-requisitos se True
+
+
+class InitializeProgressRequest(BaseModel):
+    """Requisição para inicializar progresso em nova área/subárea"""
+    area: str
+    subarea: str
+    level: str = "iniciante"
+    module_index: int = Field(0, ge=0)
+    lesson_index: int = Field(0, ge=0)
+    step_index: int = Field(0, ge=0)
+    set_as_current: bool = True  # Se deve tornar esta a área atual
