@@ -34,20 +34,44 @@ _mapping_sessions = {}
 _hybrid_mapper = None
 
 
+# Substitua a função get_hybrid_mapper() no arquivo mapping.py por esta:
+
 def get_hybrid_mapper():
     """Obtém instância singleton do mapeador híbrido"""
     global _hybrid_mapper
     if _hybrid_mapper is None:
-        pkl_path = os.getenv('CLASSIFIER_PKL_PATH', 'ultimate_classifier.pkl')
+        # Construir caminho relativo ao arquivo atual
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        # Navegar para app/utils/ultimate_classifier.pkl
+        pkl_path = os.path.join(current_dir, '..', '..', '..', 'utils', 'ultimate_classifier.pkl')
+
+        # Normalizar o caminho
+        pkl_path = os.path.normpath(pkl_path)
+
+        print(f"📁 Tentando carregar PKL de: {pkl_path}")
+        print(f"📁 Arquivo existe? {os.path.exists(pkl_path)}")
+
         try:
             _hybrid_mapper = HybridInterestMapper(pkl_path)
             print("✅ Mapeador híbrido inicializado com sucesso!")
         except Exception as e:
             print(f"❌ Erro ao inicializar mapeador híbrido: {e}")
-            # Fallback para sistema sem PKL
-            _hybrid_mapper = None
-    return _hybrid_mapper
+            # Tentar caminho alternativo se o primeiro falhar
+            alt_path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'utils', 'ultimate_classifier.pkl')
+            alt_path = os.path.abspath(alt_path)
+            print(f"📁 Tentando caminho alternativo: {alt_path}")
 
+            if os.path.exists(alt_path):
+                try:
+                    _hybrid_mapper = HybridInterestMapper(alt_path)
+                    print("✅ Mapeador híbrido inicializado com caminho alternativo!")
+                except Exception as e2:
+                    print(f"❌ Falhou também com caminho alternativo: {e2}")
+                    _hybrid_mapper = None
+            else:
+                _hybrid_mapper = None
+
+    return _hybrid_mapper
 
 def generate_balanced_questions() -> List[MappingQuestion]:
     """Gera as perguntas do questionário"""
@@ -366,6 +390,8 @@ async def start_mapping(
     )
 
 
+# Substitua a função submit_mapping no arquivo mapping.py por esta versão corrigida:
+
 @router.post("/submit", response_model=MappingResult)
 async def submit_mapping(
         submission: QuestionnaireSubmission,
@@ -409,30 +435,79 @@ async def submit_mapping(
 
     # Usar mapeador híbrido se disponível
     mapper = get_hybrid_mapper()
+    text_contribution = 0.0
 
-    if mapper and submission.text_response:
-        # Usar sistema híbrido com PKL
-        results = mapper.map_interests(
-            questionnaire_responses,
-            question_options,
-            submission.text_response
-        )
+    # CORREÇÃO: Sempre calcular scores do questionário primeiro
+    # Calcular scores manualmente se o mapper não está disponível
+    if mapper:
+        if submission.text_response:
+            # Usar sistema híbrido com PKL
+            results = mapper.map_interests(
+                questionnaire_responses,
+                question_options,
+                submission.text_response
+            )
+            normalized_scores = results['combined_scores']
+            text_contribution = results['text_quality'] * 0.4  # 40% máximo
 
-        normalized_scores = results['combined_scores']
-        text_contribution = results['text_quality'] * 0.4  # 40% máximo
-
-        # Log para debug
-        print(f"📊 Usando sistema híbrido:")
-        print(f"   - Qualidade do texto: {results['text_quality']:.1%}")
-        print(f"   - Concordância: {results['analysis_details']['agreement_score']:.1%}")
-
+            # Log para debug
+            print(f"📊 Usando sistema híbrido:")
+            print(f"   - Qualidade do texto: {results['text_quality']:.1%}")
+            print(f"   - Concordância: {results['analysis_details']['agreement_score']:.1%}")
+        else:
+            # Usar apenas questionário através do mapper
+            normalized_scores = mapper.calculate_questionnaire_scores(
+                questionnaire_responses,
+                question_options
+            )
     else:
-        # Fallback para sistema apenas com questionário
-        normalized_scores = mapper.calculate_questionnaire_scores(
-            questionnaire_responses,
-            question_options
-        ) if mapper else {}
-        text_contribution = 0.0
+        # CORREÇÃO: Implementar cálculo manual quando não há mapper
+        print("⚠️ Mapper não disponível, usando cálculo manual")
+
+        # Sistema de pesos do questionário
+        question_weights = {
+            1: 0.15,  # Tempo livre
+            2: 0.20,  # Conteúdo internet
+            3: 0.30,  # Papel no grupo
+            4: 0.35,  # Matérias
+            5: 0.40  # Profissão
+        }
+
+        # Calcular scores manualmente
+        area_scores = defaultdict(float)
+        area_appearances = defaultdict(set)
+
+        for question_id, selected_options in questionnaire_responses.items():
+            if question_id not in question_options:
+                continue
+
+            question_weight = question_weights.get(question_id, 0.2)
+            num_selected = len(selected_options)
+
+            if num_selected == 0:
+                continue
+
+            for option_id in selected_options:
+                if option_id in question_options[question_id]:
+                    option = question_options[question_id][option_id]
+                    area = option.get('area')
+                    weight = option.get('weight', 1.0)
+
+                    if area:
+                        score = (question_weight * weight) / num_selected
+                        area_scores[area] += score
+                        area_appearances[area].add(question_id)
+
+        # Normalizar scores
+        normalized_scores = {}
+        if area_scores:
+            max_score = max(area_scores.values())
+            if max_score > 0:
+                normalized_scores = {area: score / max_score for area, score in area_scores.items()}
+        else:
+            # Se não há scores, criar distribuição uniforme
+            all_areas = list(TRACK_DESCRIPTIONS.keys())
+            normalized_scores = {area: 0.1 for area in all_areas}
 
     # Garantir que todas as áreas tenham pontuação
     all_areas = list(TRACK_DESCRIPTIONS.keys())
@@ -442,6 +517,12 @@ async def submit_mapping(
 
     # Ordenar áreas
     sorted_areas = sorted(normalized_scores.items(), key=lambda x: x[1], reverse=True)
+
+    # CORREÇÃO: Verificar se há scores válidos
+    if not sorted_areas or all(score == 0 for _, score in sorted_areas):
+        # Se todos os scores são zero, usar primeira área como fallback
+        print("⚠️ Nenhum score válido encontrado, usando área padrão")
+        sorted_areas = [(all_areas[0], 1.0)] + [(area, 0.0) for area in all_areas[1:]]
 
     # Criar lista de AreaScore
     area_score_list = []
@@ -456,22 +537,12 @@ async def submit_mapping(
     # Determinar trilha principal
     recommended_track = sorted_areas[0][0]
 
-    # Determinar subáreas (simplificado para este exemplo)
+    # CORREÇÃO: Não definir subárea automaticamente
+    # Remover toda a lógica de subárea recomendada
     top_subareas = []
-    area_doc = db.collection(Collections.LEARNING_PATHS).document(recommended_track).get()
-    if area_doc.exists:
-        area_data = area_doc.to_dict()
-        subareas = list(area_data.get("subareas", {}).keys())
-        if subareas:
-            top_subareas.append(SubareaRecommendation(
-                subarea=subareas[0],
-                score=1.0,
-                reason="Subárea principal da trilha"
-            ))
+    recommended_subarea = None
 
-    recommended_subarea = top_subareas[0].subarea if top_subareas else None
-
-    # Atualizar dados do usuário
+    # Atualizar dados do usuário - SEM definir current_track ainda
     user_ref = db.collection(Collections.USERS).document(current_user["id"])
 
     # Criar registro de mapeamento
@@ -483,38 +554,14 @@ async def submit_mapping(
         "method": "hybrid_pkl" if mapper and submission.text_response else "questionnaire_only"
     }
 
-    # Preparar atualizações
+    # Preparar atualizações - APENAS recommended_track, NÃO current_track
     updates = {
-        "current_track": recommended_track,
         "recommended_track": recommended_track,
         "track_scores": normalized_scores,
         "mapping_history": current_user.get("mapping_history", []) + [mapping_record]
     }
 
-    # Configurar progresso inicial
-    if recommended_subarea:
-        area_doc = db.collection(Collections.LEARNING_PATHS).document(recommended_track).get()
-        subareas_order = []
-        if area_doc.exists:
-            area_data = area_doc.to_dict()
-            all_subareas = list(area_data.get("subareas", {}).keys())
-
-            subareas_order = [recommended_subarea]
-            for sub in all_subareas:
-                if sub != recommended_subarea:
-                    subareas_order.append(sub)
-
-        updates["progress"] = {
-            "area": recommended_track,
-            "subareas_order": subareas_order,
-            "current": {
-                "subarea": recommended_subarea,
-                "level": "iniciante",
-                "module_index": 0,
-                "lesson_index": 0,
-                "step_index": 0
-            }
-        }
+    # NÃO configurar progresso ainda - isso será feito quando escolher subárea
 
     # Atualizar no banco
     user_ref.update(updates)
@@ -553,15 +600,13 @@ async def submit_mapping(
         user_id=current_user["id"],
         session_id=submission.session_id,
         recommended_track=recommended_track,
-        recommended_subarea=recommended_subarea,
+        recommended_subarea=None,  # SEMPRE None agora
         area_scores=area_score_list,
-        top_subareas=top_subareas,
+        top_subareas=[],  # SEMPRE vazio agora
         text_analysis_contribution=text_contribution,
         badges_earned=badges_earned,
         xp_earned=xp_earned
     )
-
-
 @router.post("/analyze-text")
 async def analyze_text(
         request: TextAnalysisRequest,
