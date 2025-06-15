@@ -1,4 +1,4 @@
-# app/api/v1/endpoints/resources.py
+# app/api/v1/endpoints/resources.py - VERSÃO CORRIGIDA
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from google.cloud.firestore import ArrayUnion
@@ -32,7 +32,8 @@ async def get_learning_resources(
         db=Depends(get_db)
 ) -> Any:
     """
-    Obtém recursos de aprendizado para uma área específica
+    Obtém recursos de aprendizado para uma área específica.
+    VERSÃO CORRIGIDA - busca recursos dentro das subáreas corretamente.
     """
     user_id = current_user["id"]
 
@@ -43,27 +44,50 @@ async def get_learning_resources(
     if not area_doc.exists:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Area not found"
+            detail=f"Area '{area}' not found"
         )
 
     area_data = area_doc.to_dict()
+    all_resources = {}
 
-    # Determinar fonte de recursos
-    resources = {}
-
-    # Recursos da área geral
-    area_resources = area_data.get("resources", {})
-
-    # Recursos específicos da subárea, se especificada
-    if subarea and subarea in area_data.get("subareas", {}):
-        subarea_data = area_data["subareas"][subarea]
-        subarea_resources = subarea_data.get("resources", {})
-        # Combinar recursos (priorizar recursos da subárea)
-        resources = {**area_resources, **subarea_resources}
+    # Se subárea específica foi fornecida, buscar apenas nela
+    if subarea:
+        subareas_to_search = {subarea: area_data.get("subareas", {}).get(subarea)}
+        if not subareas_to_search[subarea]:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Subarea '{subarea}' not found in area '{area}'"
+            )
     else:
-        resources = area_resources
+        # Buscar em todas as subáreas da área
+        subareas_to_search = area_data.get("subareas", {})
 
-    if not resources:
+    # Coletar recursos de todas as subáreas relevantes
+    for subarea_name, subarea_data in subareas_to_search.items():
+        if subarea_data and "resources" in subarea_data:
+            subarea_resources = subarea_data["resources"]
+
+            # Adicionar recursos da subárea com prefixo para evitar conflitos
+            for resource_key, resource_list in subarea_resources.items():
+                prefixed_key = f"{subarea_name}_{resource_key}"
+                all_resources[prefixed_key] = {
+                    "original_key": resource_key,
+                    "subarea": subarea_name,
+                    "resources": resource_list
+                }
+
+    # Também buscar recursos no nível da área (se existirem)
+    area_resources = area_data.get("resources", {})
+    for resource_key, resource_list in area_resources.items():
+        prefixed_key = f"area_{resource_key}"
+        all_resources[prefixed_key] = {
+            "original_key": resource_key,
+            "subarea": None,  # Recurso da área geral
+            "resources": resource_list
+        }
+
+    if not all_resources:
+        print(f"⚠️ Nenhum recurso encontrado para área '{area}'" + (f" e subárea '{subarea}'" if subarea else ""))
         return []
 
     # Converter recursos para formato de resposta
@@ -79,61 +103,89 @@ async def get_learning_resources(
         "tools": "Ferramentas",
         "videos": "Vídeos",
         "youtube_channels": "Canais YouTube",
-        "datasets": "Conjuntos de Dados"
+        "datasets": "Conjuntos de Dados",
+        "sites": "Sites",
+        "plataforma": "Plataformas",
+        "canal": "Canais",
+        "serie": "Séries",
+        "revista": "Revistas",
+        "blog": "Blogs",
+        "arquivo": "Arquivos"
     }
 
-    for resource_key, resource_category_name in category_mapping.items():
-        if resource_key in resources:
-            category_resources = resources[resource_key]
+    resource_counter = 0
 
-            # Filtrar por categoria se especificada
-            if category and category != resource_key:
-                continue
+    for prefixed_key, resource_group in all_resources.items():
+        original_key = resource_group["original_key"]
+        source_subarea = resource_group["subarea"]
+        category_resources = resource_group["resources"]
 
-            for resource_item in category_resources:
-                if isinstance(resource_item, dict):
-                    resource_level = resource_item.get("level", "")
+        # Filtrar por categoria se especificada
+        if category and category != original_key:
+            continue
 
-                    # Filtrar por nível se especificado
-                    if level and level != resource_level and resource_level:
-                        continue
+        category_name = category_mapping.get(original_key, original_key.replace("_", " ").title())
 
-                    resource_list.append(ResourceResponse(
-                        id=f"{area}_{resource_key}_{len(resource_list)}",
-                        title=resource_item.get("title", "Sem título"),
-                        description=resource_item.get("description", ""),
-                        type=resource_item.get("type", resource_category_name),
-                        category=ResourceCategory(
-                            key=resource_key,
-                            name=resource_category_name
-                        ),
-                        url=resource_item.get("url", ""),
-                        author=resource_item.get("author", ""),
-                        language=resource_item.get("language", "pt-BR"),
-                        level=resource_level or "geral",
-                        tags=resource_item.get("tags", []),
-                        rating=resource_item.get("rating", 0.0),
-                        estimated_duration=resource_item.get("estimated_duration", "")
-                    ))
-                else:
-                    # Se for apenas uma string
-                    resource_list.append(ResourceResponse(
-                        id=f"{area}_{resource_key}_{len(resource_list)}",
-                        title=str(resource_item),
-                        description="",
-                        type=resource_category_name,
-                        category=ResourceCategory(
-                            key=resource_key,
-                            name=resource_category_name
-                        ),
-                        url="",
-                        author="",
-                        language="pt-BR",
-                        level="geral",
-                        tags=[],
-                        rating=0.0,
-                        estimated_duration=""
-                    ))
+        for resource_item in category_resources:
+            resource_counter += 1
+
+            if isinstance(resource_item, dict):
+                resource_level = resource_item.get("level", "geral")
+                resource_type = resource_item.get("type", category_name)
+
+                # Filtrar por nível se especificado
+                if level and level != resource_level and resource_level != "geral":
+                    continue
+
+                # Criar título mais descritivo se não existir
+                title = resource_item.get("title", f"Recurso {resource_counter}")
+                if source_subarea and not title.startswith(source_subarea):
+                    title = f"[{source_subarea}] {title}"
+
+                resource_list.append(ResourceResponse(
+                    id=f"{area}_{prefixed_key}_{resource_counter}",
+                    title=title,
+                    description=resource_item.get("description", ""),
+                    type=resource_type,
+                    category=ResourceCategory(
+                        key=original_key,
+                        name=category_name
+                    ),
+                    url=resource_item.get("url", ""),
+                    author=resource_item.get("author", ""),
+                    language=resource_item.get("language", "pt-BR"),
+                    level=resource_level,
+                    tags=resource_item.get("tags", []),
+                    rating=resource_item.get("rating", 0.0),
+                    estimated_duration=resource_item.get("estimated_duration", "")
+                ))
+            else:
+                # Se for apenas uma string
+                title = str(resource_item)
+                if source_subarea:
+                    title = f"[{source_subarea}] {title}"
+
+                resource_list.append(ResourceResponse(
+                    id=f"{area}_{prefixed_key}_{resource_counter}",
+                    title=title,
+                    description="",
+                    type=category_name,
+                    category=ResourceCategory(
+                        key=original_key,
+                        name=category_name
+                    ),
+                    url="",
+                    author="",
+                    language="pt-BR",
+                    level="geral",
+                    tags=[],
+                    rating=0.0,
+                    estimated_duration=""
+                ))
+
+    # Debug: Log para verificar quantos recursos foram encontrados
+    print(f"✅ Encontrados {len(resource_list)} recursos para área '{area}'" + (
+        f" e subárea '{subarea}'" if subarea else ""))
 
     # Registrar acesso aos recursos para XP
     if resource_list:
@@ -142,6 +194,7 @@ async def get_learning_resources(
     return resource_list
 
 
+# Manter os outros endpoints inalterados...
 @router.post("/access")
 async def register_resource_access(
         request: ResourceAccessRequest,
@@ -212,8 +265,6 @@ async def submit_resource_feedback(
         "message": "Feedback submitted successfully",
         "xp_earned": 3
     }
-
-
 @router.get("/careers/{area}", response_model=CareerExplorationResponse)
 async def get_career_exploration(
         area: str,

@@ -375,7 +375,7 @@ async def get_dynamic_exploration_menu(
 
 # Adicionar estes endpoints ao arquivo content_navigation.py
 
-@router.get("/areas/{area_name}/subareas/{subarea_name}/levels/{level_name}",
+@router.get("/areas/{area_name}/subareas/{subarea_name:path}/levels/{level_name}",
             response_model=LevelDetailResponse)
 async def get_level_details(
         area_name: str,

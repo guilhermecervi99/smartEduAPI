@@ -3,7 +3,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from google.cloud.firestore import ArrayUnion
 import time
-from app.schemas.progress import TrackSwitchRequest
+from app.schemas.progress import TrackSwitchRequest, SpecializationStartRequest, InitializeProgressRequest
 
 from app.core.security import get_current_user, get_current_user_id_required
 from app.database import get_db, Collections
@@ -20,7 +20,7 @@ from app.schemas.progress import (
     UserProgressPath,
     NextStepResponse
 )
-from app.utils.gamification import add_user_xp, grant_badge, XP_REWARDS
+from app.utils.gamification import add_user_xp, grant_badge, XP_REWARDS, calculate_study_streak
 from app.utils.llm_integration import generate_complete_lesson, call_teacher_llm
 from app.utils.progress_utils import (
     get_user_progress,
