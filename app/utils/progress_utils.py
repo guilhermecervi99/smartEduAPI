@@ -208,25 +208,19 @@ def get_next_level(current_level: str) -> Optional[str]:
     """
     Determina o próximo nível na sequência
     """
-    level_progression = [
-        "iniciante",
-        "básico",
-        "basico",
-        "intermediário",
-        "intermediario",
-        "avançado",
-        "avancado"
-    ]
+    level_progression = {
+        "iniciante": "intermediário",
+        "intermediário": "avançado",
+        "avançado": None  # Não há próximo nível
+    }
 
     # Normalizar o nível atual
-    normalized_current = current_level.lower()
+    normalized_current = current_level.lower().strip()
 
-    try:
-        current_index = level_progression.index(normalized_current)
-        if current_index < len(level_progression) - 1:
-            return level_progression[current_index + 1]
-    except ValueError:
-        # Se o nível atual não está na lista, retornar None
-        pass
+    # Corrigir variações comuns
+    if normalized_current == "intermediario":
+        normalized_current = "intermediário"
+    elif normalized_current == "avancado":
+        normalized_current = "avançado"
 
-    return None
+    return level_progression.get(normalized_current)

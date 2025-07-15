@@ -17,6 +17,30 @@ from app.utils.gamification import add_user_xp
 
 router = APIRouter()
 
+# Adicionar constante no início do arquivo
+VALID_LEVELS = ["iniciante", "intermediário", "avançado"]
+
+
+# Adicionar função de validação
+def normalize_level_name(level: str) -> str:
+    """Normaliza o nome do nível para o padrão correto"""
+    level_lower = level.lower().strip()
+
+    # Mapeamento de variações
+    level_map = {
+        "intermediario": "intermediário",
+        "avancado": "avançado",
+        "básico": "iniciante",
+        "basico": "iniciante"
+    }
+
+    normalized = level_map.get(level_lower, level_lower)
+
+    # Validar se está na lista de níveis válidos
+    if normalized not in VALID_LEVELS:
+        return "iniciante"  # Padrão seguro
+
+    return normalized
 
 @router.get("/areas", response_model=AreaListResponse)
 async def browse_areas(
@@ -204,7 +228,6 @@ async def get_subarea_details(
         metadata=subarea_data.get("meta", {})
     )
 
-
 @router.post("/areas/{area_name}/set-current")
 async def set_current_area(
         area_name: str,
@@ -214,10 +237,7 @@ async def set_current_area(
 ) -> Any:
     """
     Define a área atual do usuário.
-
-    - Preserva progresso anterior
-    - Inicializa nova estrutura de progresso
-    - Concede XP e badges
+    SEMPRE começa do início (índices 0)
     """
     user_id = current_user["id"]
     old_track = current_user.get("current_track", "")
@@ -250,16 +270,16 @@ async def set_current_area(
         # Restaurar progresso salvo
         new_progress = saved_progress[area_name]
     else:
-        # Criar novo progresso
+        # Criar novo progresso - SEMPRE DO INÍCIO
         new_progress = {
             "area": area_name,
             "subareas_order": list(area_data.get("subareas", {}).keys()),
             "current": {
                 "subarea": subarea_name or "",
                 "level": "iniciante",
-                "module_index": 0,
-                "lesson_index": 0,
-                "step_index": 0
+                "module_index": 0,  # Primeiro módulo
+                "lesson_index": 0,  # Primeira lição
+                "step_index": 0     # Primeiro passo
             }
         }
 

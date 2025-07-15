@@ -1,7 +1,12 @@
-# app/api/v1/endpoints/llm.py
+# ===== ARQUIVO: app/api/v1/endpoints/llm.py =====
+
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 import time
+import logging
+
+# ✅ CONFIGURAR LOGGER
+logger = logging.getLogger(__name__)
 
 from app.core.security import get_current_user
 from app.database import get_db
@@ -27,12 +32,11 @@ from app.utils.llm_integration import (
     generate_learning_pathway,
     analyze_content_difficulty,
     simplify_content,
-    enrich_content,
+    enrich_content_with_context,  # ✅ FUNÇÃO CORRETA
     TEACHING_STYLES
 )
 
 router = APIRouter()
-
 
 @router.post("/ask-teacher", response_model=TeacherQuestionResponse)
 async def ask_teacher_question(
@@ -42,10 +46,6 @@ async def ask_teacher_question(
 ) -> Any:
     """
     Permite ao usuário fazer perguntas ao professor virtual
-
-    - Personalizado com base no perfil do usuário
-    - Contextualizado com a área de estudo atual
-    - Concede XP por engajamento
     """
     user_id = current_user["id"]
 
@@ -88,6 +88,7 @@ async def ask_teacher_question(
         )
 
     except Exception as e:
+        logger.error(f"Erro ao perguntar ao professor: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error generating response: {str(e)}"
@@ -102,10 +103,6 @@ async def generate_lesson(
 ) -> Any:
     """
     Gera uma aula completa sobre um tópico específico
-
-    - Personalizada para idade e nível do usuário
-    - Estruturada com introdução, conteúdo principal, exemplos e atividades
-    - Concede XP pela geração
     """
     user_id = current_user["id"]
 
@@ -142,6 +139,7 @@ async def generate_lesson(
         )
 
     except Exception as e:
+        logger.error(f"Erro ao gerar lição: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error generating lesson: {str(e)}"
@@ -156,10 +154,6 @@ async def generate_assessment_endpoint(
 ) -> Any:
     """
     Gera uma avaliação com questões sobre um tópico
-
-    - Questões variadas (múltipla escolha, V/F, dissertativa)
-    - Dificuldade ajustável
-    - Inclui gabarito e explicações
     """
     user_id = current_user["id"]
 
@@ -192,54 +186,10 @@ async def generate_assessment_endpoint(
         )
 
     except Exception as e:
+        logger.error(f"Erro ao gerar avaliação: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error generating assessment: {str(e)}"
-        )
-
-
-@router.post("/generate-learning-path", response_model=LearningPathResponse)
-async def generate_learning_path(
-        request: LearningPathRequest,
-        current_user: dict = Depends(get_current_user),
-        db=Depends(get_db)
-) -> Any:
-    """
-    Gera um roteiro de aprendizado personalizado
-
-    - Plano semanal estruturado
-    - Atividades e recursos recomendados
-    - Projeto final integrador
-    """
-    user_id = current_user["id"]
-
-    try:
-        # Gerar roteiro
-        pathway = generate_learning_pathway(
-            topic=request.topic,
-            duration_weeks=request.duration_weeks,
-            hours_per_week=request.hours_per_week,
-            initial_level=request.initial_level,
-            target_level=request.target_level
-        )
-
-        # Adicionar XP
-        xp_result = add_user_xp(db, user_id, 5, f"Gerou roteiro de aprendizado: {request.topic}")
-
-        return LearningPathResponse(
-            pathway=pathway,
-            topic=request.topic,
-            duration_weeks=request.duration_weeks,
-            hours_per_week=request.hours_per_week,
-            initial_level=request.initial_level,
-            target_level=request.target_level,
-            xp_earned=xp_result["xp_added"]
-        )
-
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error generating learning path: {str(e)}"
         )
 
 
@@ -251,10 +201,6 @@ async def analyze_content(
 ) -> Any:
     """
     Analisa a dificuldade e adequação de um conteúdo
-
-    - Adequação por faixa etária
-    - Complexidade de vocabulário e conceitos
-    - Recomendações de adaptação
     """
     user_id = current_user["id"]
 
@@ -291,9 +237,83 @@ async def analyze_content(
         )
 
     except Exception as e:
+        logger.error(f"Erro ao analisar conteúdo: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error analyzing content: {str(e)}"
+        )
+
+
+@router.post("/enrich-content")
+async def enrich_content_endpoint(
+        request: Dict[str, Any],
+        current_user: dict = Depends(get_current_user),
+        db=Depends(get_db)
+) -> Any:
+    """
+    Enriquece conteúdo educacional com elementos adicionais contextualizados.
+    """
+    try:
+        # Extrair dados do request
+        content = request.get("content", "")
+        enrichment_type = request.get("enrichment_type", "exemplos")
+        context = request.get("context", {})
+        user_context = request.get("user_context", {})
+
+        # Validar conteúdo
+        if not content:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Conteúdo não pode estar vazio"
+            )
+
+        # Preparar informações de contexto
+        area = context.get("area", "")
+        subarea = context.get("subarea", "")
+        level = context.get("level", "iniciante")
+        title = context.get("title", "")
+
+        # Idade e estilo do usuário
+        user_age = user_context.get("age", current_user.get("age", 14))
+        learning_style = user_context.get("learning_style", current_user.get("learning_style", "didático"))
+
+        logger.info(f"Enriquecendo conteúdo - Tipo: {enrichment_type}, Área: {area}, Usuário: {current_user['id']}")
+
+        # ✅ CHAMAR FUNÇÃO CORRIGIDA
+        enriched_content = enrich_content_with_context(
+            text=content,
+            enrichment_type=enrichment_type,
+            title=title,
+            area=area,
+            subarea=subarea,
+            level=level,
+            user_age=user_age,
+            learning_style=learning_style
+        )
+
+        # Adicionar XP por usar ferramentas de enriquecimento
+        xp_result = add_user_xp(db, current_user["id"], 3, f"Usou ferramenta: {enrichment_type}")
+
+        return {
+            "enriched_content": enriched_content,
+            "type": enrichment_type,
+            "context_used": {
+                "area": area,
+                "subarea": subarea,
+                "level": level,
+                "title": title
+            },
+            "xp_earned": xp_result.get("xp_added", 3)
+        }
+
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
+    except Exception as e:
+        logger.error(f"Erro ao enriquecer conteúdo: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erro interno ao gerar {enrichment_type}: {str(e)}"
         )
 
 
@@ -305,10 +325,6 @@ async def simplify_content_endpoint(
 ) -> Any:
     """
     Simplifica um conteúdo para melhor compreensão
-
-    - Adapta vocabulário e complexidade
-    - Mantém conceitos essenciais
-    - Adiciona explicações quando necessário
     """
     user_id = current_user["id"]
 
@@ -330,67 +346,11 @@ async def simplify_content_endpoint(
         }
 
     except Exception as e:
+        logger.error(f"Erro ao simplificar conteúdo: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error simplifying content: {str(e)}"
         )
-
-
-@router.post("/enrich-content")
-async def enrich_content_endpoint(
-        request: ContentEnrichmentRequest,
-        current_user: dict = Depends(get_current_user),
-        db=Depends(get_db)
-) -> Any:
-    """
-    Enriquece um conteúdo com elementos adicionais
-
-    - Adiciona exemplos, analogias, perguntas reflexivas
-    - Torna o conteúdo mais envolvente
-    - Facilita a compreensão e retenção
-    """
-    user_id = current_user["id"]
-
-    # Validar tipo de enriquecimento
-    valid_types = ["exemplos", "analogias", "perguntas", "desafios", "aplicações"]
-    enrichment_type = request.enrichment_type if request.enrichment_type in valid_types else "exemplos"
-
-    try:
-        # Enriquecer conteúdo
-        enriched = enrich_content(request.content, enrichment_type)
-
-        # Adicionar XP
-        add_user_xp(db, user_id, 3, f"Enriqueceu conteúdo com {enrichment_type}")
-
-        return {
-            "original_content": request.content[:200] + "..." if len(request.content) > 200 else request.content,
-            "enriched_content": enriched,
-            "enrichment_type": enrichment_type,
-            "message": f"Conteúdo enriquecido com {enrichment_type}"
-        }
-
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error enriching content: {str(e)}"
-        )
-
-
-@router.get("/teaching-styles")
-async def get_teaching_styles() -> Any:
-    """
-    Lista os estilos de ensino disponíveis
-    """
-    return {
-        "styles": [
-            {
-                "key": key,
-                "name": key.capitalize(),
-                "description": description
-            }
-            for key, description in TEACHING_STYLES.items()
-        ]
-    }
 
 
 @router.post("/apply-assessment")
@@ -401,10 +361,6 @@ async def apply_assessment(
 ) -> Any:
     """
     Aplica uma avaliação e retorna o resultado
-
-    - Corrige automaticamente questões objetivas
-    - Fornece feedback para questões dissertativas
-    - Calcula pontuação final
     """
     user_id = current_user["id"]
     user_age = current_user.get("age", 14)
@@ -464,7 +420,6 @@ async def apply_assessment(
         elif question_type == "dissertativa":
             # Para questões dissertativas, usar LLM para avaliar
             key_points = question.get("key_points", [])
-            sample_answer = question.get("sample_answer", "")
 
             prompt = (
                 f"Avalie a resposta de um aluno de {user_age} anos:\n"
@@ -514,4 +469,21 @@ async def apply_assessment(
         "passed": score >= 70,
         "feedback": feedback_list,
         "xp_earned": xp_amount
+    }
+
+
+@router.get("/teaching-styles")
+async def get_teaching_styles() -> Any:
+    """
+    Lista os estilos de ensino disponíveis
+    """
+    return {
+        "styles": [
+            {
+                "key": key,
+                "name": key.capitalize(),
+                "description": description
+            }
+            for key, description in TEACHING_STYLES.items()
+        ]
     }

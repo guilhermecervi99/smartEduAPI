@@ -6,7 +6,10 @@ import hashlib
 from typing import Dict, List, Optional, Union, Any
 from collections import OrderedDict
 from openai import OpenAI
+import logging
 
+# Configure o logger no início do arquivo, após os imports:
+logger = logging.getLogger(__name__)
 # Configuração da API
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
@@ -679,64 +682,378 @@ def simplify_content(text: str, target_age: int) -> str:
         return f"Conteúdo adaptado para {target_age} anos:\n\n{text}\n\n[Nota: Use a função de LLM para adaptação mais precisa.]"
 
 
+# Substitua a função enrich_content no arquivo llm_integration.py por esta versão melhorada:
+
 def enrich_content(text: str, enrichment_type: str = "exemplos") -> str:
     """
-    Enriquece um conteúdo com elementos adicionais.
+    Enriquece um conteúdo com elementos adicionais específicos.
 
     Args:
         text: Texto original
-        enrichment_type: Tipo de enriquecimento (exemplos, analogias, perguntas, desafios, etc)
+        enrichment_type: Tipo de enriquecimento (exemplos, analogias, perguntas, aplicações)
 
     Returns:
-        Texto enriquecido
+        Texto enriquecido com o tipo específico de conteúdo
     """
-    prompt = f"""
-    Enriqueça o seguinte conteúdo educacional adicionando mais {enrichment_type}.
-    Mantenha o texto original e adicione os novos elementos de forma integrada e coerente.
 
-    Texto original:
+    # Prompts específicos para cada tipo de enriquecimento
+    prompts = {
+        "exemplos": """
+        Adicione 3-5 exemplos práticos e concretos para o conteúdo abaixo.
+        Os exemplos devem:
+        - Ser do cotidiano dos alunos
+        - Ilustrar claramente os conceitos
+        - Variar em complexidade (do simples ao mais elaborado)
+        - Incluir situações reais e aplicáveis
+
+        Formato desejado:
+        ## Exemplos Práticos
+
+        ### Exemplo 1: [Título descritivo]
+        [Descrição detalhada do exemplo]
+
+        ### Exemplo 2: [Título descritivo]
+        [Descrição detalhada do exemplo]
+
+        (continue com mais exemplos)
+        """,
+
+        "analogias": """
+        Crie 3-4 analogias criativas e esclarecedoras para o conteúdo abaixo.
+        As analogias devem:
+        - Comparar conceitos complexos com situações familiares
+        - Usar metáforas visuais quando possível
+        - Explicar o paralelo entre a analogia e o conceito
+        - Ser apropriadas para a idade do público
+
+        Formato desejado:
+        ## Analogias para Melhor Compreensão
+
+        ### 🔄 [Conceito] é como [Analogia]
+        [Explicação detalhada da comparação]
+
+        ### 🎯 Imagine que [Conceito] funciona como [Analogia]
+        [Explicação detalhada]
+
+        (continue com mais analogias)
+        """,
+
+        "perguntas": """
+        Formule 5-7 perguntas reflexivas e desafiadoras sobre o conteúdo abaixo.
+        As perguntas devem:
+        - Estimular o pensamento crítico
+        - Ter diferentes níveis de complexidade
+        - Conectar o conteúdo com a vida real
+        - Incluir perguntas abertas e fechadas
+        - Promover a aplicação do conhecimento
+
+        Formato desejado:
+        ## Perguntas para Reflexão e Prática
+
+        ### 🤔 Perguntas de Compreensão:
+        1. [Pergunta básica sobre o conceito]
+        2. [Pergunta sobre detalhes importantes]
+
+        ### 💭 Perguntas de Análise:
+        3. [Pergunta que exige comparação ou análise]
+        4. [Pergunta sobre causa e efeito]
+
+        ### 🚀 Perguntas de Aplicação:
+        5. [Como você aplicaria isso em...]
+        6. [O que aconteceria se...]
+
+        ### 🎯 Desafio:
+        7. [Pergunta complexa que integra vários conceitos]
+        """,
+
+        "aplicações": """
+        Descreva 4-6 aplicações práticas e reais do conteúdo abaixo.
+        As aplicações devem:
+        - Mostrar usos no mundo real
+        - Incluir diferentes áreas (tecnologia, ciência, cotidiano, profissões)
+        - Explicar como o conceito é usado na prática
+        - Inspirar o aluno sobre a importância do aprendizado
+
+        Formato desejado:
+        ## Aplicações no Mundo Real
+
+        ### 🏭 Na Indústria
+        [Como esse conceito é usado em fábricas/empresas]
+
+        ### 💻 Na Tecnologia
+        [Aplicações em computadores/internet/apps]
+
+        ### 🏠 No Dia a Dia
+        [Como usamos isso em casa/escola]
+
+        ### 🔬 Na Ciência e Pesquisa
+        [Aplicações científicas e descobertas]
+
+        ### 💼 Nas Profissões
+        [Quais profissionais usam esse conhecimento e como]
+        """
+    }
+
+    # Selecionar o prompt apropriado
+    specific_prompt = prompts.get(enrichment_type, prompts["exemplos"])
+
+    prompt = f"""
+    {specific_prompt}
+
+    Conteúdo original para enriquecer:
     ---
     {text}
     ---
 
-    Texto enriquecido com {enrichment_type}:
+    Gere APENAS o conteúdo de enriquecimento solicitado, sem repetir o conteúdo original.
+    Use linguagem clara, apropriada para adolescentes e mantenha um tom educativo e envolvente.
     """
 
     try:
         enriched_text = call_teacher_llm(
             prompt,
             teaching_style="didático",
-            temperature=0.7
+            temperature=0.8,  # Um pouco mais criativo para gerar conteúdo variado
+            max_tokens=2000
         )
         return enriched_text
     except Exception as e:
         print(f"Erro ao enriquecer conteúdo: {e}")
-        # Implementação fallback simplificada
-        enrichments = {
-            "exemplos": [
-                "\n\n**Exemplo prático:** Imagine que você está...",
-                "\n\n**Outro exemplo:** Na vida real, isso seria como..."
-            ],
-            "analogias": [
-                "\n\n**Analogia:** Isso é como...",
-                "\n\n**Comparação:** Pense nisso como..."
-            ],
-            "perguntas": [
-                "\n\n**Pergunta para reflexão:** Como isso se aplica em sua vida?",
-                "\n\n**Desafio:** Você consegue pensar em um exemplo similar?"
-            ]
+
+        # Implementação fallback mais elaborada
+        fallback_content = {
+            "exemplos": f"""
+## Exemplos Práticos
+
+### Exemplo 1: Aplicação Básica
+Imagine que você está aprendendo este conceito pela primeira vez. Um exemplo simples seria...
+
+### Exemplo 2: Situação Cotidiana
+No seu dia a dia, você pode observar isso quando...
+
+### Exemplo 3: Caso Avançado
+Para quem já domina o básico, considere esta situação mais complexa...
+
+[Nota: Exemplos genéricos - use a função com LLM para exemplos específicos do conteúdo]
+""",
+
+            "analogias": f"""
+## Analogias para Melhor Compreensão
+
+### 🔄 Este conceito é como uma receita de bolo
+Assim como seguir uma receita garante um bolo perfeito, entender este conceito...
+
+### 🎯 Imagine que funciona como um quebra-cabeça
+Cada peça do conhecimento se encaixa para formar o quadro completo...
+
+[Nota: Analogias genéricas - use a função com LLM para analogias específicas do conteúdo]
+""",
+
+            "perguntas": f"""
+## Perguntas para Reflexão e Prática
+
+### 🤔 Perguntas de Compreensão:
+1. O que você entendeu sobre o conceito principal?
+2. Quais são os pontos mais importantes?
+
+### 💭 Perguntas de Análise:
+3. Como isso se relaciona com outros conceitos que você conhece?
+4. Quais são as possíveis consequências disso?
+
+### 🚀 Perguntas de Aplicação:
+5. Como você usaria esse conhecimento em um projeto pessoal?
+6. Que problemas do dia a dia isso poderia resolver?
+
+[Nota: Perguntas genéricas - use a função com LLM para perguntas específicas do conteúdo]
+""",
+
+            "aplicações": f"""
+## Aplicações no Mundo Real
+
+### 🏭 Na Indústria
+Este conhecimento é fundamental para processos de produção e otimização...
+
+### 💻 Na Tecnologia
+Desenvolvedores e engenheiros usam esses conceitos para criar...
+
+### 🏠 No Dia a Dia
+Você pode aplicar isso quando precisa...
+
+### 💼 Nas Profissões
+Profissionais de diversas áreas utilizam esse conhecimento para...
+
+[Nota: Aplicações genéricas - use a função com LLM para aplicações específicas do conteúdo]
+"""
         }
 
-        additions = enrichments.get(enrichment_type, enrichments["exemplos"])
+        return fallback_content.get(enrichment_type, fallback_content["exemplos"])
 
-        enriched = text
-        for addition in additions[:2]:  # Adicionar até 2 enriquecimentos
-            enriched += addition
+# Adicione esta função melhorada em llm_integration.py
 
-        enriched += f"\n\n[Nota: Conteúdo enriquecido com {enrichment_type}.]"
+def enrich_content_with_context(
+        text: str,
+        enrichment_type: str = "exemplos",
+        title: str = "",
+        area: str = "",
+        subarea: str = "",
+        level: str = "iniciante",
+        user_age: int = 14,
+        learning_style: str = "didático"
+) -> str:
+    """
+    Versão melhorada de enrich_content que usa todo o contexto disponível.
+    """
 
-        return enriched
+    # Verificar se o texto não está vazio
+    if not text.strip():
+        return f"Erro: Conteúdo vazio para gerar {enrichment_type}"
 
+    # Construir contexto adicional para o prompt
+    context_info = f"""
+    Contexto da Lição:
+    - Título: {title or 'Conteúdo Educacional'}
+    - Área: {area or 'Geral'}
+    - Subárea: {subarea or 'Geral'}
+    - Nível: {level}
+    - Idade do aluno: {user_age} anos
+    - Estilo de aprendizagem: {learning_style}
+    """
+
+    # Prompts específicos aprimorados com contexto
+    prompts = {
+        "exemplos": f"""
+        {context_info}
+
+        Crie 3-4 exemplos práticos e concretos sobre o conteúdo fornecido.
+        Os exemplos devem ser:
+        - Apropriados para alunos de {user_age} anos
+        - Relacionados à área de {area or 'conhecimento geral'}
+        - Progressivos em dificuldade
+        - Conectados com o cotidiano brasileiro
+
+        Formato:
+        ## 📚 Exemplos Práticos
+
+        ### Exemplo 1: [Título descritivo]
+        [Descrição detalhada do exemplo]
+
+        ### Exemplo 2: [Título descritivo]
+        [Situação prática que ilustra o conceito]
+
+        ### Exemplo 3: [Título descritivo]
+        [Exemplo mais avançado]
+        """,
+
+        "analogias": f"""
+        {context_info}
+
+        Crie 3-4 analogias criativas para explicar os conceitos do conteúdo.
+        As analogias devem:
+        - Ser adequadas para {user_age} anos
+        - Usar referências familiares aos estudantes
+        - Tornar conceitos abstratos em concretos
+
+        Formato:
+        ## 🔄 Analogias Esclarecedoras
+
+        ### 💡 [Conceito] é como...
+        [Analogia detalhada explicando a comparação]
+
+        ### 🎯 Pense em [conceito] como se fosse...
+        [Analogia visual e descritiva]
+        """,
+
+        "perguntas": f"""
+        {context_info}
+
+        Formule 5-6 perguntas reflexivas sobre o conteúdo.
+        As perguntas devem:
+        - Ser adequadas para nível {level}
+        - Estimular pensamento crítico
+        - Ter progressão de dificuldade
+        - Conectar com a realidade dos jovens
+
+        Formato:
+        ## 🤔 Perguntas para Reflexão
+
+        ### Compreensão:
+        1. [Pergunta básica sobre o conceito]
+        2. [Pergunta sobre detalhes importantes]
+
+        ### Análise:
+        3. [Como isso se relaciona com...]
+        4. [Por que você acha que...]
+
+        ### Aplicação:
+        5. [Como você usaria isso para...]
+        6. [Crie um exemplo onde...]
+        """,
+
+        "aplicações": f"""
+        {context_info}
+
+        Descreva 4-5 aplicações práticas do conteúdo no mundo real.
+        As aplicações devem:
+        - Mostrar usos reais em {area or 'diversas áreas'}
+        - Ser relevantes para jovens de {user_age} anos
+        - Incluir tecnologias atuais
+        - Inspirar sobre possibilidades futuras
+
+        Formato:
+        ## 🚀 Aplicações no Mundo Real
+
+        ### 💻 Na Tecnologia
+        [Como esse conhecimento é usado em tecnologia]
+
+        ### 🏢 No Trabalho
+        [Profissões que usam esse conhecimento]
+
+        ### 🌍 No Cotidiano
+        [Situações do dia a dia onde isso aparece]
+
+        ### 🔬 Em Inovações
+        [Pesquisas e projetos que usam esses conceitos]
+        """
+    }
+
+    # Selecionar o prompt apropriado
+    specific_prompt = prompts.get(enrichment_type, prompts["exemplos"])
+
+    prompt = f"""
+    {specific_prompt}
+
+    Conteúdo da lição para enriquecer:
+    ---
+    {text[:1500]}...
+    ---
+
+    Gere conteúdo ESPECÍFICO sobre o que foi apresentado na lição.
+    Use linguagem clara e apropriada para {user_age} anos.
+    """
+
+    try:
+        enriched_text = call_teacher_llm(
+            prompt,
+            student_age=user_age,
+            subject_area=f"{area} - {subarea}" if area and subarea else area or "Geral",
+            teaching_style=learning_style,
+            knowledge_level=level,
+            temperature=0.8,
+            max_tokens=2000
+        )
+        return enriched_text
+    except Exception as e:
+        logger.error(f"Erro ao enriquecer conteúdo com LLM: {e}")
+
+        # Fallback simples
+        fallback_content = {
+            "exemplos": f"## 📚 Exemplos Práticos\n\n### Exemplo 1\nEste conceito pode ser observado quando...\n\n### Exemplo 2\nOutra situação onde isso aparece é...\n\n[Erro na geração de exemplos específicos]",
+            "analogias": f"## 🔄 Analogias\n\n### 💡 Comparação\nEste conceito é como...\n\n[Erro na geração de analogias específicas]",
+            "perguntas": f"## 🤔 Perguntas para Reflexão\n\n1. O que você entendeu sobre este conceito?\n2. Como isso se aplica na sua vida?\n3. Que dúvidas você ainda tem?\n\n[Erro na geração de perguntas específicas]",
+            "aplicações": f"## 🚀 Aplicações\n\n### No cotidiano\nEsse conhecimento é usado para...\n\n### Na tecnologia\nDesenvolvemos soluções que...\n\n[Erro na geração de aplicações específicas]"
+        }
+
+        return fallback_content.get(enrichment_type, "Erro ao gerar conteúdo enriquecido.")
 
 def get_personalized_content(prompt: str,
                              user_id: str = None,
