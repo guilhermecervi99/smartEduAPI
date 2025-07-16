@@ -23,6 +23,9 @@ from app.utils.gamification import (
     XP_REWARDS
 )
 
+# IMPORTAR O SERVIÇO DE EVENTOS
+from app.services.event_service import event_service, EventTypes
+
 router = APIRouter()
 
 
@@ -118,6 +121,16 @@ async def update_user(
 
     # Atualizar no banco
     user_ref.update(update_data)
+
+    # PUBLICAR EVENTO DE ATUALIZAÇÃO
+    await event_service.publish_event(
+        event_type=EventTypes.USER_UPDATED,
+        user_id=user_id,
+        data={
+            "updated_fields": list(update_data.keys()),
+            "updates": update_data
+        }
+    )
 
     # Retornar perfil atualizado
     return await get_user_profile(user_id, db, current_user_id)
@@ -292,11 +305,24 @@ async def update_preferences(
             "step_index": 0
         }
         update_data["progress"] = progress
+
+        # PUBLICAR EVENTO DE SELEÇÃO DE SUBÁREA
+        await event_service.publish_event(
+            event_type=EventTypes.SUBAREA_SELECTED,
+            user_id=user_id,
+            data={
+                "area": progress.get("area", ""),
+                "subarea": update_data["current_subarea"],
+                "previous_area": user_data.get("current_track"),
+                "previous_subarea": user_data.get("progress", {}).get("current", {}).get("subarea")
+            }
+        )
+
         del update_data["current_subarea"]
 
         # Adicionar XP por escolher nova subárea
         add_user_xp(db, user_id, XP_REWARDS.get("select_subarea", 5),
-                    f"Selecionou subárea: {update_data['current_subarea']}")
+                    f"Selecionou subárea: {progress['current']['subarea']}")
 
     # Se mudando estilo de ensino
     if "learning_style" in update_data:
@@ -305,6 +331,17 @@ async def update_preferences(
 
     # Atualizar no banco
     user_ref.update(update_data)
+
+    # PUBLICAR EVENTO DE ATUALIZAÇÃO DE PREFERÊNCIAS
+    await event_service.publish_event(
+        event_type=EventTypes.USER_PREFERENCES_UPDATED,
+        user_id=user_id,
+        data={
+            "preferences": update_data,
+            "changed_subarea": "progress" in update_data,
+            "changed_learning_style": "learning_style" in update_data
+        }
+    )
 
     # Retornar perfil atualizado
     return await get_user_profile(user_id, db, current_user_id)
@@ -371,6 +408,16 @@ async def check_user_achievements(
         if grant_badge(db, user_id, badge):
             granted_badges.append(badge)
 
+            # PUBLICAR EVENTO DE BADGE CONQUISTADA
+            await event_service.publish_event(
+                event_type=EventTypes.BADGE_EARNED,
+                user_id=user_id,
+                data={
+                    "badge_name": badge,
+                    "total_badges": len(user_data.get("badges", [])) + 1
+                }
+            )
+
     return {
         "new_badges": granted_badges,
         "total_badges": len(user_data.get("badges", [])) + len(granted_badges)
@@ -435,8 +482,6 @@ async def search_users(
     return users
 
 
-# Adicione estes endpoints ao arquivo app/api/v1/endpoints/users.py
-
 @router.post("/{user_id}/feedback")
 async def submit_feedback(
         user_id: str,
@@ -471,6 +516,19 @@ async def submit_feedback(
     if success:
         # Adicionar XP por fornecer feedback
         add_user_xp(db, user_id, 3, "Forneceu feedback sobre o sistema")
+
+        # PUBLICAR EVENTO DE FEEDBACK
+        await event_service.publish_event(
+            event_type=EventTypes.FEEDBACK_SUBMITTED,
+            user_id=user_id,
+            data={
+                "content_type": content_type,
+                "rating": rating,
+                "has_comments": bool(comments),
+                "comment_length": len(comments),
+                "session_type": session_type
+            }
+        )
 
         return {
             "message": "Feedback submitted successfully",

@@ -27,3 +27,5 @@ flake8>=6.0.0
 # Additional utilities
 python-dotenv>=1.0.0  # For environment variables
 httpx>=0.25.0  # For async HTTP requests if needed
+google-cloud-pubsub
+google-cloud-bigquery

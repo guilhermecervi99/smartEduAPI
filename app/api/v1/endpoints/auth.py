@@ -4,6 +4,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
 import time
+from app.services.event_service import event_service, EventTypes
 
 from app.core.security import (
     create_access_token,
@@ -90,7 +91,17 @@ async def register(
         subject=user_id,
         expires_delta=access_token_expires
     )
-
+    await event_service.publish_event(
+        event_type=EventTypes.USER_REGISTERED,
+        user_id=user_id,
+        data={
+            "email": user_data.email,
+            "age": user_data.age,
+            "learning_style": user_data.learning_style,
+            "initial_xp": gamification_data.get("profile_xp", 0),
+            "initial_level": gamification_data.get("profile_level", 1)
+        }
+    )
     return {
         "access_token": access_token,
         "token_type": "bearer",
@@ -167,7 +178,14 @@ async def login(
         subject=user_id,
         expires_delta=access_token_expires
     )
-
+    await event_service.publish_event(
+        event_type=EventTypes.USER_LOGIN,
+        user_id=user_id,
+        data={
+            "login_method": "email" if "@" in username else "user_id",
+            "has_password": bool(user_data.get("hashed_password"))
+        }
+    )
     return {
         "access_token": access_token,
         "token_type": "bearer",
@@ -228,5 +246,11 @@ async def logout(
     db.collection(Collections.USERS).document(current_user["id"]).update({
         "last_logout": time.time()
     })
+
+    await event_service.publish_event(
+        event_type=EventTypes.USER_LOGOUT,
+        user_id=current_user["id"],
+        data={"logout_time": time.time()}
+    )
 
     return {"message": "Successfully logged out"}

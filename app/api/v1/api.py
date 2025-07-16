@@ -10,8 +10,9 @@ from app.api.v1.endpoints import (
     achievements,
     projects,
     llm,
-    feedback,  # NOVO
-    content_navigation  # NOVO
+    feedback,
+    content_navigation,
+    analytics
 )
 from app.utils.cache_system import cache_router
 api_router = APIRouter()
@@ -30,3 +31,5 @@ api_router.include_router(llm.router, prefix="/llm", tags=["llm"])
 api_router.include_router(feedback.router, prefix="/feedback", tags=["feedback"])
 api_router.include_router(content_navigation.router, prefix="/content", tags=["content"])
 api_router.include_router(cache_router, prefix="/cache", tags=["cache"])
+
+api_router.include_router(analytics.router, prefix="/analytics", tags=["analytics"])

@@ -7,7 +7,7 @@ import time
 import uuid
 from collections import defaultdict
 import os
-
+from app.services.event_service import event_service, EventTypes
 from app.core.security import get_current_user
 from app.database import get_db, Collections
 from app.schemas.mapping import (
@@ -382,6 +382,15 @@ async def start_mapping(
             "uma recomendação ainda mais precisa!"
         )
 
+    await event_service.publish_event(
+        event_type=EventTypes.MAPPING_STARTED,
+        user_id=current_user["id"],
+        data={
+            "session_id": session_id,
+            "total_questions": len(questions),
+            "has_ml_model": has_ml_model
+        }
+    )
     return MappingStartResponse(
         session_id=session_id,
         questions=questions,
@@ -595,6 +604,36 @@ async def submit_mapping(
 
     # Limpar sessão
     del _mapping_sessions[submission.session_id]
+
+    # Publicar evento de mapeamento completo
+    await event_service.publish_event(
+        event_type=EventTypes.MAPPING_COMPLETED,
+        user_id=current_user["id"],
+        data={
+            "session_id": submission.session_id,
+            "recommended_track": recommended_track,
+            "top_3_areas": sorted_areas[:3] if sorted_areas else [],
+            "had_text_response": bool(submission.text_response),
+            "text_quality": results.get('text_quality', 0),
+            "method": "hybrid_pkl" if mapper and submission.text_response else "questionnaire_only",
+            "all_scores": normalized_scores,
+            "xp_earned": xp_earned,
+            "badges_earned": badges_earned
+        }
+    )
+
+    # Se analisou texto, publicar evento específico
+    if submission.text_response and mapper:
+        await event_service.publish_event(
+            event_type=EventTypes.MAPPING_TEXT_ANALYZED,
+            user_id=current_user["id"],
+            data={
+                "text_length": len(submission.text_response),
+                "text_quality": results.get('text_quality', 0),
+                "text_scores": results.get('text_scores', {}),
+                "agreement_score": results.get('analysis_details', {}).get('agreement_score', 0)
+            }
+        )
 
     return MappingResult(
         user_id=current_user["id"],
