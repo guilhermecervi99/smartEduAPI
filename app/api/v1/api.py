@@ -12,14 +12,18 @@ from app.api.v1.endpoints import (
     llm,
     feedback,
     content_navigation,
-    analytics
+    analytics,
+    community,      # ADICIONAR
+    notifications   # ADICIONAR
 )
 from app.utils.cache_system import cache_router
+
 api_router = APIRouter()
 
 # Incluir todos os endpoints
 api_router.include_router(auth.router, prefix="/auth", tags=["authentication"])
 api_router.include_router(users.router, prefix="/users", tags=["users"])
+
 api_router.include_router(mapping.router, prefix="/mapping", tags=["mapping"])
 api_router.include_router(progress.router, prefix="/progress", tags=["progress"])
 api_router.include_router(resources.router, prefix="/resources", tags=["resources"])
@@ -31,5 +35,8 @@ api_router.include_router(llm.router, prefix="/llm", tags=["llm"])
 api_router.include_router(feedback.router, prefix="/feedback", tags=["feedback"])
 api_router.include_router(content_navigation.router, prefix="/content", tags=["content"])
 api_router.include_router(cache_router, prefix="/cache", tags=["cache"])
-
 api_router.include_router(analytics.router, prefix="/analytics", tags=["analytics"])
+
+# ADICIONAR ESTES DOIS NOVOS ROUTERS
+api_router.include_router(community.router, prefix="/community", tags=["community"])
+api_router.include_router(notifications.router, prefix="/notifications", tags=["notifications"])

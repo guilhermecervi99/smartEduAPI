@@ -42,11 +42,21 @@ def initialize_user_gamification() -> Dict[str, Any]:
 def calculate_user_level(xp: int) -> int:
     """
     Calcula o nível do usuário baseado no XP
+    Sistema progressivo: 100 XP por nível inicial, aumentando gradualmente
     """
-    for level, threshold in enumerate(settings.xp_thresholds, 1):
-        if xp < threshold:
-            return level - 1
-    return len(settings.xp_thresholds)
+    # Sistema de níveis mais robusto
+    level = 1
+    xp_needed = 0
+    xp_per_level = 100
+
+    while xp >= xp_needed + xp_per_level:
+        xp_needed += xp_per_level
+        level += 1
+        # Aumenta a dificuldade a cada 5 níveis
+        if level % 5 == 0:
+            xp_per_level += 50
+
+    return level
 
 
 def add_user_xp(db, user_id: str, amount: int, reason: str) -> Dict[str, Any]:
@@ -271,6 +281,39 @@ def calculate_study_streak(user_data: Dict[str, Any]) -> int:
 
     return streak
 
+
+def get_level_progress(current_xp: int, current_level: int) -> dict:
+    """
+    Calcula o progresso detalhado do nível
+    """
+    xp_for_current_level = get_xp_for_level(current_level)
+    xp_for_next_level = get_xp_for_level(current_level + 1)
+    xp_in_current_level = current_xp - xp_for_current_level
+    xp_needed_for_next = xp_for_next_level - xp_for_current_level
+
+    return {
+        "current_level": current_level,
+        "current_xp": current_xp,
+        "xp_for_current_level": xp_for_current_level,
+        "xp_for_next_level": xp_for_next_level,
+        "xp_in_current_level": xp_in_current_level,
+        "xp_needed_for_next": xp_needed_for_next - xp_in_current_level,
+        "progress_percentage": (xp_in_current_level / xp_needed_for_next * 100) if xp_needed_for_next > 0 else 100
+    }
+
+def get_xp_for_level(level: int) -> int:
+    """
+    Calcula o XP total necessário para alcançar um nível específico
+    """
+    total_xp = 0
+    xp_per_level = 100
+
+    for i in range(1, level):
+        total_xp += xp_per_level
+        if i % 5 == 0:
+            xp_per_level += 50
+
+    return total_xp
 # Recompensas por tipo de ação
 XP_REWARDS = {
     "create_account": 10,

@@ -124,6 +124,30 @@ def ensure_navigation_context(user_data: dict, db) -> Dict[str, Any]:
     }
 
 
+@router.get("/xp-info")
+async def get_xp_info(
+        current_user: dict = Depends(get_current_user)
+) -> Any:
+    """
+    Obtém informações detalhadas sobre XP e níveis
+    """
+    from app.utils.gamification import get_level_progress
+
+    xp_info = get_level_progress(
+        current_user.get("profile_xp", 0),
+        current_user.get("profile_level", 1)
+    )
+
+    # Adicionar histórico recente
+    xp_history = current_user.get("xp_history", [])[-10:]  # Últimas 10 transações
+
+    return {
+        **xp_info,
+        "recent_xp_gains": xp_history,
+        "total_xp": current_user.get("profile_xp", 0),
+        "achievements_count": len(current_user.get("badges", []))
+    }
+
 def get_next_available_content(area_data: dict, current_context: dict, db) -> Dict[str, Any]:
     """
     Encontra o próximo conteúdo disponível quando o atual está completo
@@ -2259,3 +2283,66 @@ def get_last_activity_for_subarea(user_data: dict, area: str, subarea: str) -> O
                     pass
 
     return last_activity
+
+
+@router.post("/level/advance")
+async def advance_to_next_level(
+        current_user: dict = Depends(get_current_user),
+        db=Depends(get_db)
+) -> Any:
+    """
+    Avança manualmente para o próximo nível após confirmação do usuário
+    """
+    user_id = current_user["id"]
+    progress = get_user_progress(db, user_id)
+
+    if not progress:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Progresso não encontrado"
+        )
+
+    current_level = progress.get("current", {}).get("level", "iniciante")
+    levels_order = ["iniciante", "intermediário", "avançado"]
+
+    current_index = levels_order.index(current_level) if current_level in levels_order else 0
+
+    if current_index >= len(levels_order) - 1:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Já está no nível máximo"
+        )
+
+    next_level = levels_order[current_index + 1]
+
+    # Atualizar progresso
+    new_progress = {
+        "area": progress.get("area"),
+        "current": {
+            "subarea": progress.get("current", {}).get("subarea"),
+            "level": next_level,
+            "module_index": 0,
+            "lesson_index": 0,
+            "step_index": 0
+        },
+        "subareas_order": progress.get("subareas_order", [])
+    }
+
+    user_ref = db.collection(Collections.USERS).document(user_id)
+    user_ref.update({"progress": new_progress})
+
+    # PUBLICAR EVENTO
+    await event_service.publish_event(
+        event_type=EventTypes.LEVEL_ADVANCED,
+        user_id=user_id,
+        data={
+            "from_level": current_level,
+            "to_level": next_level,
+            "manual": True
+        }
+    )
+
+    return {
+        "message": f"Avançou para o nível {next_level}",
+        "new_level": next_level
+    }
